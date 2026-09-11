@@ -12,6 +12,11 @@
 - Login (`POST /api/auth/login`) returns `{"user": {...}, "token": "..."}`. The JWT key is `token`, not `access`.
 - `GET /api/projects` returns `{"projects": [...]}`, not a bare list.
 - DB table names are `users`, `projects`, `memberships`, `tasks` (custom `db_table`), not Django defaults like `users_user`.
+- Task comments: `GET/POST /api/tasks/<id>/comments`. Members/admins post, viewers read-only (403 on post), append-only (PATCH/PUT/DELETE → 405). Response shape `{"comments": [{id, body, author:{id,email,name}|null, createdAt}]}`, oldest first.
+
+## Frontend build gotcha
+
+- `cd frontend && npm run build` (`tsc && vite build`) currently FAILS, but only with errors inside `node_modules` (missing `@types/node`, jest/vitest globals). App `src/` type-checks clean (`npx tsc --noEmit` shows zero `src/` errors). Pre-existing; fix by adding `@types/node` to devDependencies and/or `skipLibCheck: true`. `npm test` and the Vite dev server are unaffected.
 
 ## Logging
 
