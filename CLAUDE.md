@@ -13,6 +13,7 @@
 - `GET /api/projects` returns `{"projects": [...]}`, not a bare list.
 - DB table names are `users`, `projects`, `memberships`, `tasks` (custom `db_table`), not Django defaults like `users_user`.
 - Task comments: `GET/POST /api/tasks/<id>/comments`. Members/admins post, viewers read-only (403 on post), append-only (PATCH/PUT/DELETE → 405). Response shape `{"comments": [{id, body, author:{id,email,name}|null, createdAt}]}`, oldest first.
+- Airtable export (3c, design in docs/superpowers/plans/2026-09-11-airtable-export.md): the base's `Tasks` table has exactly eight fields — Title, Task ID, Project, Project ID, Status, Assignee, Description, Position. Sending any other field name returns 422 UNKNOWN_FIELD_NAME. Idempotency is server-side via `Table.batch_upsert(chunk, key_fields=["Task ID"], typecast=True)`, no lookup. The service chunks at `BATCH_SIZE = 10` per call (1000 tasks = 100 calls) so a failure is isolated to one chunk. Airtable 401/403 abort the export with HTTP 502; 400/404/422 go to per-record `failed` after a single-record fallback; 429/5xx/timeouts are retried (3 attempts), and a chunk that exhausts retries is reported failed with no fallback. pyairtable 2.3.x raises plain `requests.HTTPError` (status on `exc.response`) and retries by default; build `Api(key, retry_strategy=False)` so unit-test call counts stay exact.
 
 ## Frontend build gotcha
 
