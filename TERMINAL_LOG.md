@@ -11638,3 +11638,58 @@ $ git add docs/3c-airtable-export-test-plan.md docs/superpowers/plans/2026-09-11
 [exit 0]
 
 $ git add 3a-comments-screenshot.png 3c-export-first-run.png 3c-export-second-run.png TERMINAL_LOG.md
+[exit 0]
+
+$ git log --oneline -6
+46126d4 docs: add 3a and 3c verification screenshots
+0bfc0af docs: add Part 3c test plan, design plan, and project notes
+1e5fea0 chore: pass Airtable credentials to the backend container
+af9266f feat: add Export to Airtable button on the project page (Part 3c)
+e430a5e feat: add Airtable export service and endpoint (Part 3c)
+5afe520 docs: add design notes for task comments (3a) and activity feed (3b)
+[exit 0]
+
+$ git push origin master 2>&1
+To https://github.com/Bharath95/q-taskboard.git
+   5afe520..46126d4  master -> master
+[exit 0]
+
+$ git status --short
+ M TERMINAL_LOG.md
+[exit 0]
+
+# subagent: (main) — rename REVIEW.md, final full test run, submission audit
+$ git mv review.md REVIEW.tmp && git mv REVIEW.tmp REVIEW.md && ls REVIEW.md
+REVIEW.md
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest -q 2>&1 | tail -5
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:368: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    decoded = self.decode_complete(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+77 passed, 94 warnings in 31.69s
+[exit 0]
+
+$ docker compose exec -T frontend npm test -- --run 2>&1 | tail -12
+ ✓ src/tests/TaskCard.test.tsx (3 tests) 74ms
+stderr | src/tests/ExportButton.test.tsx > Export to Airtable button > role admin sees the export button: true
+⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+⚠️ React Router Future Flag Warning: Relative route resolution within Splat routes is changing in v7. You can use the `v7_relativeSplatPath` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_relativesplatpath.
+
+ ✓ src/tests/ExportButton.test.tsx (6 tests) 248ms
+
+ Test Files  3 passed (3)
+      Tests  15 passed (15)
+   Start at  13:55:31
+   Duration  2.26s (transform 673ms, setup 279ms, collect 930ms, tests 327ms, environment 2.05s, prepare 1.31s)
+
+[exit 0]
+
+$ git add -A RECORDING.md REVIEW.md review.md
+[exit 0]
+
+$ git add TERMINAL_LOG.md && git commit -q -m 'chore: append final full test run to TERMINAL_LOG (backend 77, frontend 15)
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A9eHe7UrXHCAqWMAbRWNeP' && echo LOGGED
