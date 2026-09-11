@@ -97,3 +97,37 @@ class TestTasks:
 
         response = client.delete(f'/api/tasks/{task.id}')
         assert response.status_code == 403
+
+    def test_search_is_not_sql_injectable(self, auth_client, user):
+        """A member of one project must never receive tasks from another
+        project via the ?q= search. A SQL-injection payload in q should be
+        treated as a literal string, not executed."""
+        mine = Project.objects.create(name='Mine', owner=user)
+        Membership.objects.create(user=user, project=mine, role='member')
+        Task.objects.create(project=mine, title='My own task', created_by=user)
+
+        other_owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
+        other = Project.objects.create(name='Secret', owner=other_owner)
+        Task.objects.create(project=other, title='Confidential task', created_by=other_owner)
+
+        payload = "x%') OR 1=1 --"
+        response = auth_client.get(f'/api/projects/{mine.id}/tasks', {'q': payload})
+
+        assert response.status_code == 200
+        returned_project_ids = {str(t['project_id']) for t in response.data['tasks']}
+        assert str(other.id) not in returned_project_ids, (
+            f'search leaked tasks from another project: {returned_project_ids}'
+        )
+
+    def test_search_matches_task_title(self, auth_client, user):
+        """Legitimate search still returns matching tasks in the project."""
+        project = Project.objects.create(name='P', owner=user)
+        Membership.objects.create(user=user, project=project, role='member')
+        Task.objects.create(project=project, title='Launch the rocket', created_by=user)
+        Task.objects.create(project=project, title='Buy milk', created_by=user)
+
+        response = auth_client.get(f'/api/projects/{project.id}/tasks', {'q': 'rocket'})
+
+        assert response.status_code == 200
+        titles = [t['title'] for t in response.data['tasks']]
+        assert titles == ['Launch the rocket']
