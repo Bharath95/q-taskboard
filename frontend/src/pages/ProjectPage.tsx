@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, getToken } from "@/lib/api-client";
+import { apiFetch, getToken, getStoredUser } from "@/lib/api-client";
 import { Header } from "@/components/Header";
 import { StatusColumn } from "@/components/StatusColumn";
 import { TaskDetail } from "@/components/TaskDetail";
@@ -41,6 +41,9 @@ export default function ProjectPage() {
   });
 
   const project = data?.project;
+  const me = getStoredUser();
+  const myRole = project?.memberships.find((m) => m.user.id === me?.id)?.role;
+  const canComment = myRole === "admin" || myRole === "member";
   const tasksByStatus: Record<TaskStatus, ApiTask[]> = {
     todo: [],
     in_progress: [],
@@ -168,6 +171,7 @@ export default function ProjectPage() {
           task={activeTask}
           projectId={id!}
           members={project.memberships}
+          canComment={canComment}
           onClose={() => setActiveTask(null)}
         />
       )}

@@ -1,23 +1,43 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
-import type { ApiTask, ApiProjectMember, TaskStatus } from "@/types";
+import type { ApiComment, ApiTask, ApiProjectMember, TaskStatus } from "@/types";
 import { STATUS_LABELS, STATUS_ORDER } from "@/types";
 
 type Props = {
   task: ApiTask;
   projectId: string;
   members: ApiProjectMember[];
+  canComment: boolean;
   onClose: () => void;
 };
 
-export function TaskDetail({ task, projectId, members, onClose }: Props) {
+export function TaskDetail({ task, projectId, members, canComment, onClose }: Props) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [status, setStatus] = useState<TaskStatus>(task.status);
   const [assigneeId, setAssigneeId] = useState<string>(task.assigneeId ?? "");
   const [error, setError] = useState<string | null>(null);
+  const [commentBody, setCommentBody] = useState("");
+
+  const { data: commentsData } = useQuery({
+    queryKey: ["task", task.id, "comments"],
+    queryFn: () =>
+      apiFetch<{ comments: ApiComment[] }>(`/api/tasks/${task.id}/comments`),
+  });
+
+  const postComment = useMutation({
+    mutationFn: (body: string) =>
+      apiFetch<{ comment: ApiComment }>(`/api/tasks/${task.id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      }),
+    onSuccess: () => {
+      setCommentBody("");
+      queryClient.invalidateQueries({ queryKey: ["task", task.id, "comments"] });
+    },
+  });
 
   const updateTask = useMutation({
     mutationFn: (input: Partial<ApiTask>) =>
@@ -151,6 +171,52 @@ export function TaskDetail({ task, projectId, members, onClose }: Props) {
             </button>
           </div>
         </div>
+
+        <section className="mt-6">
+          <h3 className="text-sm font-medium mb-2">comments</h3>
+          <ul data-testid="comment-list" className="space-y-2">
+            {(commentsData?.comments ?? []).map((c) => (
+              <li
+                key={c.id}
+                data-testid="comment-item"
+                className="text-sm border border-border rounded p-2"
+              >
+                <div className="flex justify-between text-xs text-muted">
+                  <span>{c.author?.name ?? "unknown"}</span>
+                  <time data-testid="comment-timestamp" dateTime={c.createdAt}>
+                    {new Date(c.createdAt).toLocaleString()}
+                  </time>
+                </div>
+                <p className="mt-1 whitespace-pre-wrap">{c.body}</p>
+              </li>
+            ))}
+          </ul>
+          {canComment && (
+            <form
+              className="mt-3 flex gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!commentBody.trim()) return;
+                postComment.mutate(commentBody.trim());
+              }}
+            >
+              <textarea
+                data-testid="comment-input"
+                value={commentBody}
+                onChange={(e) => setCommentBody(e.target.value)}
+                placeholder="add a comment"
+                className="flex-1 rounded-md bg-bg border border-border px-3 py-2 text-sm focus:border-accent focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={postComment.isPending}
+                className="bg-accent hover:bg-indigo-500 text-white text-sm font-medium rounded-md px-4 disabled:opacity-50"
+              >
+                Post comment
+              </button>
+            </form>
+          )}
+        </section>
       </div>
     </div>
   );
