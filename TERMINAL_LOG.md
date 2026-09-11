@@ -7710,3 +7710,3931 @@ $ git add docs/superpowers/plans/2026-09-11-task-comments.md CLAUDE.md TERMINAL_
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01A9eHe7UrXHCAqWMAbRWNeP' && echo OK5
+OK5
+[exit 0]
+
+$ git log --oneline -6
+cd5fe32 docs: comments implementation plan, project notes, and session terminal log
+161622b test: add Playwright E2E scaffold for comment thread flow
+690513b feat: add task comment thread UI with viewer read-only gating
+eee7a94 feat: add task comment threads API
+69c3192 docs: add SQL injection review notes and repro for bug 1
+3da6def fix: prevent SQL injection in task search endpoint
+[exit 0]
+
+$ git status --short
+ M TERMINAL_LOG.md
+[exit 0]
+
+$ git push origin master 2>&1
+To https://github.com/Bharath95/q-taskboard.git
+   3da6def..cd5fe32  master -> master
+[exit 0]
+
+$ git log --oneline origin/master -6
+cd5fe32 docs: comments implementation plan, project notes, and session terminal log
+161622b test: add Playwright E2E scaffold for comment thread flow
+690513b feat: add task comment thread UI with viewer read-only gating
+eee7a94 feat: add task comment threads API
+69c3192 docs: add SQL injection review notes and repro for bug 1
+3da6def fix: prevent SQL injection in task search endpoint
+[exit 0]
+
+# subagent: (main) — commit & push design.md
+$ git add design.md && git commit -q -m 'docs: add design notes for task comments (3a) and activity feed (3b)
+
+3a: records the append-only-by-schema, SET_NULL author, and authorization decisions.
+3b (deferred): intended Activity model and member-only feed, plus the decision to wrap
+the mutation and its audit write in transaction.atomic() so a failed activity write rolls
+back the change, since the brief treats the audit trail as part of the engagement.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01A9eHe7UrXHCAqWMAbRWNeP' && echo OK
+OK
+[exit 0]
+
+$ git push origin master 2>&1
+To https://github.com/Bharath95/q-taskboard.git
+   cd5fe32..5afe520  master -> master
+[exit 0]
+
+$ git log --oneline -2
+5afe520 docs: add design notes for task comments (3a) and activity feed (3b)
+cd5fe32 docs: comments implementation plan, project notes, and session terminal log
+[exit 0]
+
+# subagent: (main) — gather 3c context (airtable export)
+$ cat backend/projects/airtable_mock.py
+cat: backend/projects/airtable_mock.py: No such file or directory
+[exit 1]
+
+$ grep -in 'airtable\|pyairtable\|requests' backend/requirements.txt
+6:pyairtable>=2.3,<3.0
+[exit 0]
+
+$ sed -n '230,243p' backend/projects/views.py
+class ExportView(APIView):
+    def post(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
+
+        tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
+        return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+
+
+class CommentListCreateView(APIView):
+    def _task_or_none(self, task_id):
+[exit 0]
+
+$ grep -oE '^AIRTABLE_[A-Z_]+=' .env | sed 's/=$//' ; for k in AIRTABLE_API_KEY AIRTABLE_BASE_ID AIRTABLE_TABLE_NAME; do v=$(grep -E "^$k=" .env | cut -d= -f2-); if [ -n "$v" ]; then echo "$k: SET (${#v} chars)"; else echo "$k: empty"; fi; done
+AIRTABLE_API_KEY
+AIRTABLE_BASE_ID
+AIRTABLE_TABLE_NAME
+AIRTABLE_API_KEY: SET (82 chars)
+AIRTABLE_BASE_ID: SET (17 chars)
+AIRTABLE_TABLE_NAME: SET (5 chars)
+[exit 0]
+
+$ grep -rin 'export' frontend/src --include=*.tsx --include=*.ts -l
+(eval):1: no matches found: --include=*.tsx
+[exit 1]
+
+$ grep -rin 'export\|airtable' backend/projects/tests.py backend/users/tests.py
+[exit 1]
+
+# subagent: export-test-plan — write 3c airtable export test-case plan
+$ sed -n '1,60p' backend/projects/views.py
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.db.models import Q
+from users.serializers import UserSerializer
+from .models import Project, Membership, Task, Comment
+from .serializers import ProjectDetailSerializer, TaskSerializer, CommentSerializer
+
+
+def _get_membership(user, project_id):
+    try:
+        return Membership.objects.get(user=user, project_id=project_id)
+    except Membership.DoesNotExist:
+        return None
+
+
+def _can_edit_tasks(role):
+    return role in ('admin', 'member')
+
+
+class ProjectListCreateView(APIView):
+    def get(self, request):
+        memberships = (
+            Membership.objects
+            .filter(user=request.user)
+            .select_related('project__owner')
+            .prefetch_related('project__tasks')
+            .order_by('-project__created_at')
+        )
+        projects = []
+        for m in memberships:
+            p = m.project
+            projects.append({
+                'id': str(p.id),
+                'name': p.name,
+                'description': p.description,
+                'role': m.role,
+                'owner': UserSerializer(p.owner).data,
+                'taskCount': p.tasks.count(),
+                'createdAt': p.created_at.isoformat(),
+            })
+        return Response({'projects': projects})
+
+    def post(self, request):
+        name = (request.data.get('name') or '').strip()
+        description = request.data.get('description') or None
+        if not name or len(name) > 120:
+            return Response({'error': 'invalid input'}, status=status.HTTP_400_BAD_REQUEST)
+        project = Project.objects.create(name=name, description=description, owner=request.user)
+        Membership.objects.create(user=request.user, project=project, role='admin')
+        return Response(
+            {'project': {'id': str(project.id), 'name': project.name}},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProjectDetailView(APIView):
+    def get(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+[exit 0]
+
+$ grep -n '_get_membership\|_can_edit_tasks\|class ExportView\|class .*View' backend/projects/views.py
+10:def _get_membership(user, project_id):
+17:def _can_edit_tasks(role):
+21:class ProjectListCreateView(APIView):
+57:class ProjectDetailView(APIView):
+59:        membership = _get_membership(request.user, project_id)
+74:        membership = _get_membership(request.user, project_id)
+91:        membership = _get_membership(request.user, project_id)
+104:class TaskListCreateView(APIView):
+106:        membership = _get_membership(request.user, project_id)
+130:        membership = _get_membership(request.user, project_id)
+133:        if not _can_edit_tasks(membership.role):
+160:class TaskDetailView(APIView):
+189:        membership = _get_membership(request.user, str(task.project_id))
+192:        if not _can_edit_tasks(membership.role):
+199:class MemberAddView(APIView):
+201:        membership = _get_membership(request.user, project_id)
+230:class ExportView(APIView):
+232:        membership = _get_membership(request.user, project_id)
+235:        if not _can_edit_tasks(membership.role):
+242:class CommentListCreateView(APIView):
+253:        membership = _get_membership(request.user, task.project_id)
+263:        membership = _get_membership(request.user, task.project_id)
+266:        if not _can_edit_tasks(membership.role):
+[exit 0]
+
+$ sed -n '225,245p' backend/projects/views.py
+            membership_obj.save()
+
+        return Response({'ok': True, 'role': membership_obj.role}, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class ExportView(APIView):
+    def post(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
+
+        tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
+        return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+
+
+class CommentListCreateView(APIView):
+    def _task_or_none(self, task_id):
+        try:
+            return Task.objects.get(id=task_id)
+[exit 0]
+
+$ ls backend backend/projects docs 2>/dev/null
+backend:
+Dockerfile
+manage.py
+projects
+pytest.ini
+requirements.txt
+taskboard
+users
+
+backend/projects:
+__init__.py
+__pycache__
+management
+migrations
+models.py
+serializers.py
+test_comments.py
+test_comments_model.py
+tests.py
+urls.py
+views.py
+
+docs:
+superpowers
+[exit 0]
+
+$ grep -n 'airtable\|AIRTABLE' -ri backend --include=*.py --include=*.txt --include=*.example -l
+(eval):1: no matches found: --include=*.py
+[exit 1]
+
+$ cat backend/projects/models.py
+import uuid
+from django.db import models
+from django.conf import settings
+
+
+class Project(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, null=True)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='owned_projects')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'projects'
+
+
+class Membership(models.Model):
+    ROLE_CHOICES = [('admin', 'Admin'), ('member', 'Member'), ('viewer', 'Viewer')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='memberships')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='member')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'memberships'
+        unique_together = ('user', 'project')
+
+
+class Task(models.Model):
+    STATUS_CHOICES = [
+        ('todo', 'To Do'),
+        ('in_progress', 'In Progress'),
+        ('review', 'Review'),
+        ('done', 'Done'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='tasks')
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='todo')
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='assigned_tasks',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_tasks',
+    )
+    position = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tasks'
+        indexes = [models.Index(fields=['project', 'status'])]
+
+
+class Comment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='comments',
+    )
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'comments'
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['task', 'created_at'])]
+[exit 0]
+
+$ cat backend/projects/serializers.py
+from rest_framework import serializers
+from users.serializers import UserSerializer
+from .models import Project, Membership, Task, Comment
+
+
+class TaskSerializer(serializers.ModelSerializer):
+    assignee = UserSerializer(read_only=True)
+    assignee_id = serializers.SerializerMethodField()
+    project_id = serializers.SerializerMethodField()
+    created_by_id = serializers.SerializerMethodField()
+
+    def get_assignee_id(self, obj):
+        return str(obj.assignee_id) if obj.assignee_id else None
+
+    def get_project_id(self, obj):
+        return str(obj.project_id)
+
+    def get_created_by_id(self, obj):
+        return str(obj.created_by_id)
+
+    class Meta:
+        model = Task
+        fields = [
+            'id', 'project_id', 'title', 'description', 'status',
+            'assignee_id', 'created_by_id', 'position', 'created_at', 'updated_at', 'assignee',
+        ]
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Membership
+        fields = ['id', 'role', 'user']
+
+
+class ProjectDetailSerializer(serializers.ModelSerializer):
+    owner = UserSerializer(read_only=True)
+    owner_id = serializers.SerializerMethodField()
+    memberships = MembershipSerializer(many=True, read_only=True)
+    tasks = TaskSerializer(many=True, read_only=True)
+
+    def get_owner_id(self, obj):
+        return str(obj.owner_id)
+
+    class Meta:
+        model = Project
+        fields = ['id', 'name', 'description', 'owner_id', 'owner', 'memberships', 'tasks', 'created_at', 'updated_at']
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ['id', 'body', 'author', 'createdAt']
+[exit 0]
+
+$ cat backend/projects/urls.py
+from django.urls import path
+from .views import ProjectListCreateView, ProjectDetailView, TaskListCreateView, TaskDetailView, ExportView, MemberAddView, CommentListCreateView
+
+urlpatterns = [
+    path('projects', ProjectListCreateView.as_view()),
+    path('projects/<uuid:project_id>', ProjectDetailView.as_view()),
+    path('projects/<uuid:project_id>/tasks', TaskListCreateView.as_view()),
+    path('projects/<uuid:project_id>/members', MemberAddView.as_view()),
+    path('projects/<uuid:project_id>/export', ExportView.as_view()),
+    path('tasks/<uuid:task_id>', TaskDetailView.as_view()),
+    path('tasks/<uuid:task_id>/comments', CommentListCreateView.as_view()),
+]
+[exit 0]
+
+$ sed -n '1,80p' backend/projects/tests.py
+import pytest
+from rest_framework.test import APIClient
+from users.models import User
+from projects.models import Project, Membership, Task
+
+
+@pytest.fixture
+def client():
+    return APIClient()
+
+
+@pytest.fixture
+def user(db):
+    return User.objects.create_user(email='meera@taskboard.dev', name='Meera Iyer', password='password123')
+
+
+@pytest.fixture
+def auth_client(client, user):
+    response = client.post('/api/auth/login', {
+        'email': 'meera@taskboard.dev',
+        'password': 'password123',
+    }, format='json')
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['token']}")
+    return client
+
+
+@pytest.mark.django_db
+class TestProjects:
+    def test_create_project(self, auth_client, user):
+        response = auth_client.post('/api/projects', {'name': 'My Project'}, format='json')
+        assert response.status_code == 201
+        assert response.data['project']['name'] == 'My Project'
+
+    def test_list_only_returns_member_projects(self, auth_client, user):
+        p1 = Project.objects.create(name='Mine', owner=user)
+        Membership.objects.create(user=user, project=p1, role='admin')
+        other = User.objects.create_user(email='other@example.com', name='Other', password='password123')
+        p2 = Project.objects.create(name='Not Mine', owner=other)
+        Membership.objects.create(user=other, project=p2, role='admin')
+
+        response = auth_client.get('/api/projects')
+        assert response.status_code == 200
+        names = [p['name'] for p in response.data['projects']]
+        assert 'Mine' in names
+        assert 'Not Mine' not in names
+
+    def test_get_project_detail(self, auth_client, user):
+        project = Project.objects.create(name='My Project', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+
+        response = auth_client.get(f'/api/projects/{project.id}')
+        assert response.status_code == 200
+        assert response.data['project']['name'] == 'My Project'
+
+    def test_non_member_cannot_view_project(self, client, user):
+        owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
+        project = Project.objects.create(name='Private', owner=owner)
+        Membership.objects.create(user=owner, project=project, role='admin')
+
+        resp = client.post('/api/auth/login', {'email': 'meera@taskboard.dev', 'password': 'password123'}, format='json')
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {resp.data['token']}")
+
+        response = client.get(f'/api/projects/{project.id}')
+        assert response.status_code == 403
+
+
+@pytest.mark.django_db
+class TestTasks:
+    def test_create_task(self, auth_client, user):
+        project = Project.objects.create(name='P', owner=user)
+        Membership.objects.create(user=user, project=project, role='admin')
+
+        response = auth_client.post(f'/api/projects/{project.id}/tasks', {'title': 'Do a thing'}, format='json')
+        assert response.status_code == 201
+        assert response.data['task']['title'] == 'Do a thing'
+
+    def test_viewers_cannot_create_tasks(self, client, user):
+        owner = User.objects.create_user(email='owner@example.com', name='Owner', password='password123')
+        project = Project.objects.create(name='P', owner=owner)
+        Membership.objects.create(user=owner, project=project, role='admin')
+[exit 0]
+
+$ sed -n '1,50p' backend/projects/test_comments.py
+import pytest
+from rest_framework.test import APIClient
+from users.models import User
+from projects.models import Project, Membership, Task
+
+
+@pytest.fixture
+def client():
+    return APIClient()
+
+
+@pytest.fixture
+def owner(db):
+    return User.objects.create_user(
+        email='owner@taskboard.dev', name='Olive Owner', password='password123'
+    )
+
+
+@pytest.fixture
+def project(owner):
+    project = Project.objects.create(name='Comment Project', owner=owner)
+    Membership.objects.create(user=owner, project=project, role='admin')
+    return project
+
+
+@pytest.fixture
+def task(project, owner):
+    return Task.objects.create(project=project, title='A task', created_by=owner)
+
+
+def make_user(email, name='Test User'):
+    return User.objects.create_user(email=email, name=name, password='password123')
+
+
+def authed_client(user):
+    """Return an APIClient with a Bearer token for the given user."""
+    client = APIClient()
+    response = client.post(
+        '/api/auth/login',
+        {'email': user.email, 'password': 'password123'},
+        format='json',
+    )
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['token']}")
+    return client
+
+
+def member_client(project, email, role):
+    """Create a user with `role` membership on `project` and return an authed client."""
+    user = make_user(email, name=f'{role.title()} User')
+    Membership.objects.create(user=user, project=project, role=role)
+[exit 0]
+
+$ cat backend/requirements.txt backend/pytest.ini
+django>=5.0,<6.0
+djangorestframework>=3.15,<4.0
+djangorestframework-simplejwt>=5.3,<6.0
+django-cors-headers>=4.3,<5.0
+psycopg2-binary>=2.9,<3.0
+pyairtable>=2.3,<3.0
+pytest-django>=4.8,<5.0
+pytest>=8.0,<9.0
+[pytest]
+DJANGO_SETTINGS_MODULE = taskboard.settings
+python_files = tests.py test_*.py
+python_classes = Test
+python_functions = test_
+[exit 0]
+
+$ grep -rn 'AIRTABLE' --include='*.py' --include='*.txt' --include='*.example' --include='*.yml' --include='*.md' . | grep -v node_modules | grep -v TERMINAL_LOG
+README.md:121:AIRTABLE_API_KEY=your_personal_access_token
+README.md:122:AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
+README.md:123:AIRTABLE_TABLE_NAME=Tasks
+.env.example:8:AIRTABLE_API_KEY=
+.env.example:9:AIRTABLE_BASE_ID=
+.env.example:10:AIRTABLE_TABLE_NAME=Tasks
+[exit 0]
+
+$ ls frontend frontend/src frontend/src/pages frontend/src/components 2>/dev/null
+frontend:
+Dockerfile
+index.html
+node_modules
+package.json
+postcss.config.js
+src
+tailwind.config.ts
+tsconfig.json
+vite.config.ts
+vitest.config.ts
+
+frontend/src:
+App.tsx
+components
+globals.css
+lib
+main.tsx
+pages
+tests
+types
+
+frontend/src/components:
+Header.tsx
+StatusColumn.tsx
+TaskCard.tsx
+TaskDetail.tsx
+
+frontend/src/pages:
+DashboardPage.tsx
+LoginPage.tsx
+ProjectPage.tsx
+RegisterPage.tsx
+[exit 0]
+
+$ ls docs/superpowers; ls docs/superpowers/* | head
+plans
+2026-09-11-task-comments.md
+[exit 0]
+
+$ grep -n -i 'export\|role' frontend/src/pages/ProjectPage.tsx | head -40
+11:export default function ProjectPage() {
+45:  const myRole = project?.memberships.find((m) => m.user.id === me?.id)?.role;
+46:  const canComment = myRole === "admin" || myRole === "member";
+132:                <p className="text-sm text-red-400 mt-2" role="alert">
+159:                      {m.user.email} · {m.role}
+[exit 0]
+
+$ ls frontend/src/tests frontend/src/lib
+frontend/src/lib:
+api-client.ts
+
+frontend/src/tests:
+TaskCard.test.tsx
+schemas.test.ts
+setup.ts
+[exit 0]
+
+$ sed -n '105,140p' README.md
+- `DELETE /api/projects/:id` — Delete project (admin only)
+
+### Tasks
+- `GET /api/projects/:id/tasks` — List tasks in a project; supports `?q=` search (authenticated)
+- `POST /api/projects/:id/tasks` — Create a task (admin or member)
+- `PATCH /api/tasks/:id` — Update a task (authenticated)
+- `DELETE /api/tasks/:id` — Delete a task (admin or member)
+
+### Export
+- `POST /api/projects/:id/export` — Export tasks to Airtable (admin or member)
+
+## Airtable Export (Part 3c)
+
+Set these in your `.env` before running the export:
+
+```
+AIRTABLE_API_KEY=your_personal_access_token
+AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
+AIRTABLE_TABLE_NAME=Tasks
+```
+
+The backend uses `pyairtable` for real API calls. `backend/projects/airtable_mock.py` is a test double — use it in unit tests, not in production code.
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18, Vite 5, TypeScript 5 (strict) |
+| Routing | React Router 6 |
+| Data fetching | TanStack Query 5 |
+| Styling | Tailwind CSS 3 |
+| Frontend tests | Vitest 2 + Testing Library |
+| Backend | Django 5, Django REST Framework 3 |
+| Auth | djangorestframework-simplejwt (JWT, 30-day tokens) |
+| ORM | Django ORM |
+| Database | PostgreSQL 16 |
+[exit 0]
+
+$ grep -n -i 'airtable\|export' README.md | head -20
+113:### Export
+114:- `POST /api/projects/:id/export` — Export tasks to Airtable (admin or member)
+116:## Airtable Export (Part 3c)
+118:Set these in your `.env` before running the export:
+121:AIRTABLE_API_KEY=your_personal_access_token
+122:AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
+123:AIRTABLE_TABLE_NAME=Tasks
+126:The backend uses `pyairtable` for real API calls. `backend/projects/airtable_mock.py` is a test double — use it in unit tests, not in production code.
+[exit 0]
+
+$ grep -rn -i 'airtable\|export' backend/taskboard/settings.py
+[exit 1]
+
+$ wc -l docs/3c-airtable-export-test-plan.md && grep -c '^| [A-F][0-9]' docs/3c-airtable-export-test-plan.md
+     180 docs/3c-airtable-export-test-plan.md
+36
+[exit 0]
+
+# subagent: review-test-plan-opus — review 3c export test-case plan
+$ sed -n '1,80p' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/test_comments.py
+import pytest
+from rest_framework.test import APIClient
+from users.models import User
+from projects.models import Project, Membership, Task
+
+
+@pytest.fixture
+def client():
+    return APIClient()
+
+
+@pytest.fixture
+def owner(db):
+    return User.objects.create_user(
+        email='owner@taskboard.dev', name='Olive Owner', password='password123'
+    )
+
+
+@pytest.fixture
+def project(owner):
+    project = Project.objects.create(name='Comment Project', owner=owner)
+    Membership.objects.create(user=owner, project=project, role='admin')
+    return project
+
+
+@pytest.fixture
+def task(project, owner):
+    return Task.objects.create(project=project, title='A task', created_by=owner)
+
+
+def make_user(email, name='Test User'):
+    return User.objects.create_user(email=email, name=name, password='password123')
+
+
+def authed_client(user):
+    """Return an APIClient with a Bearer token for the given user."""
+    client = APIClient()
+    response = client.post(
+        '/api/auth/login',
+        {'email': user.email, 'password': 'password123'},
+        format='json',
+    )
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['token']}")
+    return client
+
+
+def member_client(project, email, role):
+    """Create a user with `role` membership on `project` and return an authed client."""
+    user = make_user(email, name=f'{role.title()} User')
+    Membership.objects.create(user=user, project=project, role=role)
+    return user, authed_client(user)
+
+
+def comments_url(task_id):
+    return f'/api/tasks/{task_id}/comments'
+
+
+@pytest.mark.django_db
+class TestComments:
+    def test_comments_returned_oldest_first(self, project, task):
+        _, client = member_client(project, 'member@taskboard.dev', 'member')
+        for body in ['first', 'second', 'third']:
+            resp = client.post(comments_url(task.id), {'body': body}, format='json')
+            assert resp.status_code == 201
+
+        resp = client.get(comments_url(task.id))
+        assert resp.status_code == 200
+        bodies = [c['body'] for c in resp.data['comments']]
+        assert bodies == ['first', 'second', 'third']
+
+    def test_comment_shows_author_body_and_timestamp(self, project, task):
+        user, client = member_client(project, 'member@taskboard.dev', 'member')
+        resp = client.post(comments_url(task.id), {'body': 'hello world'}, format='json')
+        assert resp.status_code == 201
+
+        resp = client.get(comments_url(task.id))
+        assert resp.status_code == 200
+        comment = resp.data['comments'][0]
+        assert comment['body'] == 'hello world'
+        assert comment['author']['name'] == user.name
+[exit 0]
+
+$ sed -n '1,200p' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/models.py
+import uuid
+from django.db import models
+from django.conf import settings
+
+
+class Project(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, null=True)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='owned_projects')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'projects'
+
+
+class Membership(models.Model):
+    ROLE_CHOICES = [('admin', 'Admin'), ('member', 'Member'), ('viewer', 'Viewer')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='memberships')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='member')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'memberships'
+        unique_together = ('user', 'project')
+
+
+class Task(models.Model):
+    STATUS_CHOICES = [
+        ('todo', 'To Do'),
+        ('in_progress', 'In Progress'),
+        ('review', 'Review'),
+        ('done', 'Done'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='tasks')
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='todo')
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='assigned_tasks',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_tasks',
+    )
+    position = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tasks'
+        indexes = [models.Index(fields=['project', 'status'])]
+
+
+class Comment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='comments',
+    )
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'comments'
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['task', 'created_at'])]
+[exit 0]
+
+# subagent: export-design — draft 3c airtable export design plan
+$ ls /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects:
+__init__.py
+__pycache__
+management
+migrations
+models.py
+serializers.py
+test_comments.py
+test_comments_model.py
+tests.py
+urls.py
+views.py
+
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs:
+3c-airtable-export-test-plan.md
+superpowers
+
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans:
+2026-09-11-task-comments.md
+
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages:
+DashboardPage.tsx
+LoginPage.tsx
+ProjectPage.tsx
+RegisterPage.tsx
+[exit 0]
+
+$ grep -n 'airtable\|AIRTABLE' -ri /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/requirements.txt /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/config/settings.py /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docker-compose.yml /Users/bharath/Desktop/AjackusAssignment/q-taskboard/.env.example 2>/dev/null
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/requirements.txt:6:pyairtable>=2.3,<3.0
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/.env.example:8:AIRTABLE_API_KEY=
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/.env.example:9:AIRTABLE_BASE_ID=
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/.env.example:10:AIRTABLE_TABLE_NAME=Tasks
+[exit 2]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/views.py
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from django.db.models import Q
+from users.serializers import UserSerializer
+from .models import Project, Membership, Task, Comment
+from .serializers import ProjectDetailSerializer, TaskSerializer, CommentSerializer
+
+
+def _get_membership(user, project_id):
+    try:
+        return Membership.objects.get(user=user, project_id=project_id)
+    except Membership.DoesNotExist:
+        return None
+
+
+def _can_edit_tasks(role):
+    return role in ('admin', 'member')
+
+
+class ProjectListCreateView(APIView):
+    def get(self, request):
+        memberships = (
+            Membership.objects
+            .filter(user=request.user)
+            .select_related('project__owner')
+            .prefetch_related('project__tasks')
+            .order_by('-project__created_at')
+        )
+        projects = []
+        for m in memberships:
+            p = m.project
+            projects.append({
+                'id': str(p.id),
+                'name': p.name,
+                'description': p.description,
+                'role': m.role,
+                'owner': UserSerializer(p.owner).data,
+                'taskCount': p.tasks.count(),
+                'createdAt': p.created_at.isoformat(),
+            })
+        return Response({'projects': projects})
+
+    def post(self, request):
+        name = (request.data.get('name') or '').strip()
+        description = request.data.get('description') or None
+        if not name or len(name) > 120:
+            return Response({'error': 'invalid input'}, status=status.HTTP_400_BAD_REQUEST)
+        project = Project.objects.create(name=name, description=description, owner=request.user)
+        Membership.objects.create(user=request.user, project=project, role='admin')
+        return Response(
+            {'project': {'id': str(project.id), 'name': project.name}},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProjectDetailView(APIView):
+    def get(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            project = (
+                Project.objects
+                .prefetch_related('memberships__user', 'tasks__assignee', 'tasks__created_by')
+                .select_related('owner')
+                .get(id=project_id)
+            )
+        except Project.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'project': ProjectDetailSerializer(project).data})
+
+    def patch(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if membership.role != 'admin':
+            return Response({'error': 'only admins can update projects'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        if 'name' in request.data:
+            project.name = request.data['name'].strip()
+        if 'description' in request.data:
+            project.description = request.data['description'] or None
+        project.save()
+        return Response({'project': {'id': str(project.id), 'name': project.name}})
+
+    def delete(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if membership.role != 'admin':
+            return Response({'error': 'only admins can delete projects'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        project.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TaskListCreateView(APIView):
+    def get(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        q = request.query_params.get('q')
+        if q:
+            tasks = (
+                Task.objects
+                .filter(project_id=project_id)
+                .filter(Q(title__icontains=q) | Q(description__icontains=q))
+                .select_related('assignee')
+                .order_by('status', 'position')
+            )
+            return Response({'tasks': TaskSerializer(tasks, many=True).data})
+
+        tasks = (
+            Task.objects
+            .filter(project_id=project_id)
+            .select_related('assignee')
+            .order_by('status', 'position')
+        )
+        return Response({'tasks': TaskSerializer(tasks, many=True).data})
+
+    def post(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot create tasks'}, status=status.HTTP_403_FORBIDDEN)
+
+        title = (request.data.get('title') or '').strip()
+        if not title:
+            return Response({'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        task_status = request.data.get('status', 'todo')
+        if task_status not in ('todo', 'in_progress', 'review', 'done'):
+            return Response({'error': 'invalid status'}, status=status.HTTP_400_BAD_REQUEST)
+
+        last = Task.objects.filter(project_id=project_id, status=task_status).order_by('-position').first()
+        position = (last.position + 1) if last else 0
+
+        task = Task.objects.create(
+            project_id=project_id,
+            title=title,
+            description=request.data.get('description') or None,
+            status=task_status,
+            assignee_id=request.data.get('assigneeId') or None,
+            created_by=request.user,
+            position=position,
+        )
+        task_data = TaskSerializer(Task.objects.select_related('assignee').get(id=task.id)).data
+        return Response({'task': task_data}, status=status.HTTP_201_CREATED)
+
+
+class TaskDetailView(APIView):
+    def patch(self, request, task_id):
+        try:
+            task = Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'title' in request.data:
+            task.title = request.data['title'].strip()
+        if 'description' in request.data:
+            task.description = request.data['description'] or None
+        if 'status' in request.data:
+            new_status = request.data['status']
+            if new_status not in ('todo', 'in_progress', 'review', 'done'):
+                return Response({'error': 'invalid status'}, status=status.HTTP_400_BAD_REQUEST)
+            task.status = new_status
+        if 'assigneeId' in request.data:
+            task.assignee_id = request.data['assigneeId'] or None
+        task.save()
+
+        task_data = TaskSerializer(Task.objects.select_related('assignee').get(id=task_id)).data
+        return Response({'task': task_data})
+
+    def delete(self, request, task_id):
+        try:
+            task = Task.objects.select_related('project').get(id=task_id)
+        except Task.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership = _get_membership(request.user, str(task.project_id))
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot delete tasks'}, status=status.HTTP_403_FORBIDDEN)
+
+        task.delete()
+        return Response({'ok': True})
+
+
+class MemberAddView(APIView):
+    def post(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if membership.role != 'admin':
+            return Response({'error': 'only admins can add members'}, status=status.HTTP_403_FORBIDDEN)
+
+        email = (request.data.get('email') or '').strip()
+        role = request.data.get('role', 'member')
+        if role not in ('admin', 'member', 'viewer'):
+            return Response({'error': 'invalid role'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from users.models import User as UserModel
+        try:
+            user = UserModel.objects.get(email=email)
+        except UserModel.DoesNotExist:
+            return Response({'error': 'user not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        membership_obj, created = Membership.objects.get_or_create(
+            user=user,
+            project_id=project_id,
+            defaults={'role': role},
+        )
+        if not created:
+            membership_obj.role = role
+            membership_obj.save()
+
+        return Response({'ok': True, 'role': membership_obj.role}, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class ExportView(APIView):
+    def post(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
+
+        tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
+        return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+
+
+class CommentListCreateView(APIView):
+    def _task_or_none(self, task_id):
+        try:
+            return Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return None
+
+    def get(self, request, task_id):
+        task = self._task_or_none(task_id)
+        if task is None:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        membership = _get_membership(request.user, task.project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        comments = task.comments.select_related('author').order_by('created_at')
+        return Response({'comments': CommentSerializer(comments, many=True).data})
+
+    def post(self, request, task_id):
+        task = self._task_or_none(task_id)
+        if task is None:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        membership = _get_membership(request.user, task.project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot post comments'}, status=status.HTTP_403_FORBIDDEN)
+        body = request.data.get('body')
+        if not isinstance(body, str) or not body.strip():
+            return Response({'error': 'comment body is required'}, status=status.HTTP_400_BAD_REQUEST)
+        comment = Comment.objects.create(task=task, author=request.user, body=body.strip())
+        data = CommentSerializer(Comment.objects.select_related('author').get(id=comment.id)).data
+        return Response({'comment': data}, status=status.HTTP_201_CREATED)
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/models.py
+import uuid
+from django.db import models
+from django.conf import settings
+
+
+class Project(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, null=True)
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='owned_projects')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'projects'
+
+
+class Membership(models.Model):
+    ROLE_CHOICES = [('admin', 'Admin'), ('member', 'Member'), ('viewer', 'Viewer')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='memberships')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='member')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'memberships'
+        unique_together = ('user', 'project')
+
+
+class Task(models.Model):
+    STATUS_CHOICES = [
+        ('todo', 'To Do'),
+        ('in_progress', 'In Progress'),
+        ('review', 'Review'),
+        ('done', 'Done'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='tasks')
+    title = models.CharField(max_length=500)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='todo')
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='assigned_tasks',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_tasks',
+    )
+    position = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'tasks'
+        indexes = [models.Index(fields=['project', 'status'])]
+
+
+class Comment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='comments',
+    )
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'comments'
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['task', 'created_at'])]
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/serializers.py
+from rest_framework import serializers
+from users.serializers import UserSerializer
+from .models import Project, Membership, Task, Comment
+
+
+class TaskSerializer(serializers.ModelSerializer):
+    assignee = UserSerializer(read_only=True)
+    assignee_id = serializers.SerializerMethodField()
+    project_id = serializers.SerializerMethodField()
+    created_by_id = serializers.SerializerMethodField()
+
+    def get_assignee_id(self, obj):
+        return str(obj.assignee_id) if obj.assignee_id else None
+
+    def get_project_id(self, obj):
+        return str(obj.project_id)
+
+    def get_created_by_id(self, obj):
+        return str(obj.created_by_id)
+
+    class Meta:
+        model = Task
+        fields = [
+            'id', 'project_id', 'title', 'description', 'status',
+            'assignee_id', 'created_by_id', 'position', 'created_at', 'updated_at', 'assignee',
+        ]
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = Membership
+        fields = ['id', 'role', 'user']
+
+
+class ProjectDetailSerializer(serializers.ModelSerializer):
+    owner = UserSerializer(read_only=True)
+    owner_id = serializers.SerializerMethodField()
+    memberships = MembershipSerializer(many=True, read_only=True)
+    tasks = TaskSerializer(many=True, read_only=True)
+
+    def get_owner_id(self, obj):
+        return str(obj.owner_id)
+
+    class Meta:
+        model = Project
+        fields = ['id', 'name', 'description', 'owner_id', 'owner', 'memberships', 'tasks', 'created_at', 'updated_at']
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ['id', 'body', 'author', 'createdAt']
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/urls.py
+from django.urls import path
+from .views import ProjectListCreateView, ProjectDetailView, TaskListCreateView, TaskDetailView, ExportView, MemberAddView, CommentListCreateView
+
+urlpatterns = [
+    path('projects', ProjectListCreateView.as_view()),
+    path('projects/<uuid:project_id>', ProjectDetailView.as_view()),
+    path('projects/<uuid:project_id>/tasks', TaskListCreateView.as_view()),
+    path('projects/<uuid:project_id>/members', MemberAddView.as_view()),
+    path('projects/<uuid:project_id>/export', ExportView.as_view()),
+    path('tasks/<uuid:task_id>', TaskDetailView.as_view()),
+    path('tasks/<uuid:task_id>/comments', CommentListCreateView.as_view()),
+]
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/3c-airtable-export-test-plan.md
+# Part 3c — Airtable Export: Test-Case Plan (for review)
+
+Status: DRAFT for human review. No implementation or test code exists yet for the cases below.
+
+## 1. Context and assumptions
+
+### Stack clarification
+- Backend is Django 5 + DRF. Real Airtable calls go through `pyairtable` (already pinned in `backend/requirements.txt`, `>=2.3,<3.0`). The brief's mention of the npm `airtable` package and `src/lib/airtable-mock.ts` comes from a stale PDF and does not apply.
+- The endpoint already exists as a stub: `POST /api/projects/<uuid:project_id>/export` → `ExportView` in `backend/projects/views.py`. It already enforces membership + `_can_edit_tasks(role)` and returns `{'exported': 0, ...}`.
+- Config comes from `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `AIRTABLE_TABLE_NAME` (default `Tasks`), per `.env.example` and README.
+- `backend/projects/airtable_mock.py` does not exist yet. Creating it is part of 3c (see "Test double" below).
+
+### Proposed endpoint contract (to be confirmed by reviewer)
+
+Request: `POST /api/projects/{project_id}/export`, empty body, Bearer token.
+
+Success (HTTP 200), also returned when some records failed:
+
+```json
+{
+  "exported": 12,
+  "created": 9,
+  "updated": 3,
+  "failed": [
+    { "taskId": "0f1c...", "reason": "422 Unknown field name: \"Foo\"" }
+  ],
+  "total": 13
+}
+```
+
+- `exported = created + updated`; `total = exported + len(failed)`; `total` equals the number of tasks in the project.
+- HTTP 200 with a non-empty `failed` list = partial success. The endpoint returns a non-200 only for auth errors (401/403), missing Airtable config (503 `{"error": "airtable not configured"}`), or a failure that prevents any work at all (e.g. the initial "fetch existing rows" call fails permanently → 502).
+- Error shape follows the existing convention: `{"error": "<message>"}`.
+
+### Proposed field mapping (Task → Airtable `Tasks` row)
+
+| Airtable field | Source | Notes |
+|---|---|---|
+| `Task ID` | `task.id` (UUID string) | Idempotency key. Must exist in the base as a single-line text field. |
+| `Title` | `task.title` | |
+| `Description` | `task.description or ""` | |
+| `Status` | `task.status` | Sent as the raw value (`todo`, `in_progress`, `review`, `done`). If the base field is single-select, the choices must match exactly, or the base must allow `typecast=True`. Open question Q4. |
+| `Assignee` | `task.assignee.email` or empty | Plain text, not a linked record. |
+| `Created By` | `task.created_by.email` | |
+| `Project` | `project.name` | Text. |
+| `Project ID` | `project.id` | Text; lets one base hold many projects. |
+| `Position` | `task.position` | Number. |
+| `Created At` / `Updated At` | ISO 8601 strings | Text or date field. |
+
+### Proposed export algorithm (what the tests assume)
+1. Auth check (already in stub). Load all tasks for the project with `select_related('assignee','created_by')`.
+2. Fetch existing rows for this project from Airtable (filter by `{Project ID} = '<id>'`), build a map `Task ID → airtable record id`.
+3. Split tasks into `to_create` (no existing row) and `to_update` (existing row). Chunk each into batches of 10.
+4. For each batch call `table.batch_create(...)` / `table.batch_update(...)` with a retry wrapper.
+5. If a batch fails **permanently**, fall back to sending that batch's records one at a time so a single bad record only fails itself. Record each failure as `{taskId, reason}`.
+6. Return the aggregated counts.
+
+### Key testability assumption: injectable client
+- The export logic lives in a service function, e.g. `export_project_tasks(project, client=None)` in `backend/projects/airtable_export.py`. When `client` is `None` it builds a real `pyairtable.Table` from settings. `ExportView` calls the service.
+- The client is a small protocol the service depends on: `all(formula=...)`, `batch_create(records)`, `batch_update(records)`. Both `pyairtable.Table` and the test double satisfy it.
+- Unit tests inject `FakeAirtableTable` from `backend/projects/airtable_mock.py`. The view-level tests patch the factory (e.g. `monkeypatch.setattr('projects.airtable_export.get_table', lambda: fake)`) so HTTP tests also never touch the network.
+- Backoff is injectable too: `sleep=time.sleep` parameter (tests pass a no-op and assert the delays it was called with).
+
+### Test double: `FakeAirtableTable` (to be written as part of 3c)
+- Stores rows in memory as `{rec_id: {fields}}`, generates `recXXXX` ids.
+- `all(formula=None)` returns stored rows (tests preload rows to simulate a previous export; the fake may ignore the formula and tests assert the formula string separately).
+- `batch_create` / `batch_update` append and mutate; enforce the 10-record limit by raising if a batch is larger (so the chunking bug is caught).
+- Records every call in `self.calls` as `(method, payload)`.
+- Scriptable failures: `fake.fail_next(n, exc)` raises `exc` for the next `n` calls, or `fake.fail_for_task_id(task_id, exc)` raises whenever a payload contains that Task ID (used for per-record failure tests).
+- Errors are raised as `pyairtable.exceptions`/`requests.HTTPError` instances with a fake `response.status_code`, so the classification code under test sees the same type it will see in production.
+
+### Retry policy under test
+- Transient: HTTP 429, 500, 502, 503, and `requests.ConnectionError` / `requests.Timeout`. Retry with exponential backoff (e.g. 0.5s, 1s, 2s), honouring `Retry-After` on 429 when present. Max 3 attempts (1 initial + 2 retries) — the reviewer may change N; tests use the constant.
+- Permanent: HTTP 400, 401, 403, 404, 422. Never retried. Reported per record.
+- Note: `pyairtable` has its own optional retry (`retry_strategy`). The plan assumes we set it to no-retry (or leave the default off) and own retries ourselves, so tests can assert exact call counts. Open question Q5.
+
+---
+
+## 2. Test cases
+
+Test style follows `backend/projects/test_comments.py`: pytest + `APIClient`, Bearer token from `POST /api/auth/login`, helpers `member_client(project, email, role)`. Files: `backend/projects/test_export.py` (HTTP + service) and `backend/projects/test_airtable_mock.py` (sanity tests for the double).
+
+Every HTTP test uses a fixture `fake_airtable` that patches the table factory with a `FakeAirtableTable`.
+
+### A. Authorization (5 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| A1 | `test_admin_can_export` | Admin role is allowed. | POST as admin with 2 tasks; assert 200 and `exported == 2`; fake received calls. |
+| A2 | `test_member_can_export` | Member role is allowed. | POST as member; assert 200 and fake received `batch_create`. |
+| A3 | `test_viewer_gets_403` | Viewer is denied. | POST as viewer; assert 403 and `fake.calls == []` (no Airtable call made). |
+| A4 | `test_non_member_gets_403` | Authenticated non-member is denied. | POST as user with no membership; assert 403, no Airtable call. |
+| A5 | `test_unauthenticated_gets_401` | Missing token is rejected. | POST with no credentials; assert 401, no Airtable call. |
+
+### B. Core export (7 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| B1 | `test_exports_all_tasks_in_project` | Every task is pushed. | Create 3 tasks; POST; assert `created == 3`, fake store has 3 rows, set of `Task ID`s equals the task ids. |
+| B2 | `test_field_mapping` | Row fields match the mapping table. | One task with title/description/status/assignee/position; assert the created record's fields exactly (`Task ID`, `Title`, `Status`, `Assignee` email, `Project ID`, ...). |
+| B3 | `test_unassigned_task_maps_assignee_empty` | Null assignee does not crash and maps to empty. | Task with `assignee=None`; assert `Assignee` is `""` (or absent — reviewer to pick) and export succeeds. |
+| B4 | `test_response_counts_match` | Counts are consistent. | 4 tasks; assert `exported == total == 4`, `created == 4`, `updated == 0`, `failed == []`. |
+| B5 | `test_empty_project_exports_zero` | No tasks is a graceful no-op. | Project with 0 tasks; assert 200, `exported == 0`, and no `batch_create` call (fetch of existing rows may still happen). |
+| B6 | `test_other_project_tasks_not_exported` | Scope is one project. | Two projects owned by same admin, 2 tasks each; export project A; assert only A's 2 Task IDs in fake store and `Project ID` on each row equals A's id. |
+| B7 | `test_batches_of_ten` | Respects Airtable's 10-record limit. | 23 tasks; assert `batch_create` called 3 times with sizes 10/10/3 and `exported == 23`. (Fake raises on >10 so a regression fails loudly.) |
+| B8 | `test_missing_airtable_config_returns_503` | Unconfigured server fails clearly, before any work. | Unset `AIRTABLE_API_KEY`; POST; assert 503 with `{"error": "airtable not configured"}`. |
+
+### C. Idempotency (4 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| C1 | `test_second_run_does_not_duplicate` | Re-running upserts instead of inserting. | POST twice with 3 tasks (fake retains state between calls); assert fake store still has 3 rows and each Task ID appears once. |
+| C2 | `test_second_run_reports_updated_not_created` | Response distinguishes created vs updated. | Run 1: `created == 3, updated == 0`. Run 2: `created == 0, updated == 3`, `exported == 3`. |
+| C3 | `test_changed_task_updates_existing_row` | Edits propagate to the same row. | Export; change a task's title and status; export again; assert the row with that Task ID has the new values and the same `rec` id; `updated == 1` (others also updated, or unchanged — see Q6). |
+| C4 | `test_new_task_after_first_export_is_created_alongside_updates` | Mixed run. | Export 2 tasks; add a 3rd; export; assert `created == 1, updated == 2`, store has 3 rows. |
+| C5 | `test_existing_rows_lookup_scoped_by_project` | Upsert lookup only matches this project's rows. | Preload fake with a row whose Task ID equals a task in project B; export project A; assert the `all()` formula contains A's `Project ID` and B's row is untouched. |
+
+### D. Partial failure resilience (4 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| D1 | `test_single_permanent_failure_does_not_abort` | One bad record, others succeed. | 5 tasks; `fake.fail_for_task_id(t3, HTTPError 422)`; assert 200, `exported == 4`, `failed == [{taskId: t3, reason: contains "422"}]`, store has 4 rows. |
+| D2 | `test_failed_batch_falls_back_to_single_records` | Batch failure isolates the bad record. | 10 tasks in one batch, one poisoned; assert `batch_create` called once (fails), then 10 single-record calls (or 10 `batch_create` of size 1); 9 succeed, 1 in `failed`. |
+| D3 | `test_failure_in_update_path_reported` | Same resilience for updates. | Export once; poison one Task ID on `batch_update`; export again; assert `updated == n-1`, that id in `failed`. |
+| D4 | `test_all_records_fail_still_returns_200_with_report` | Total failure is reported, not a 500. | All tasks poisoned with 422; assert 200, `exported == 0`, `len(failed) == n`, every entry has a non-empty `reason`. |
+| D5 | `test_initial_lookup_permanent_failure_returns_502` | Cannot even list rows → hard error, no writes. | `fake.fail_next(1, HTTPError 403)` on `all()`; assert 502 `{"error": ...}` and no `batch_create` call. |
+
+### E. Retry behaviour (6 cases; service-level, no HTTP, `sleep` injected as a recorder)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| E1 | `test_429_is_retried_then_succeeds` | Rate limit is transient. | `fail_next(1, HTTPError 429)`; run; assert `batch_create` called 2 times, `exported == n`, `failed == []`, sleep called once. |
+| E2 | `test_503_is_retried_then_succeeds` | Server error is transient. | Same with 503 (parametrize over 500/502/503). |
+| E3 | `test_network_timeout_is_retried` | Connection errors are transient. | `fail_next(1, requests.Timeout)`; assert called twice and success. |
+| E4 | `test_422_is_not_retried` | Validation error is permanent. | `fail_next(1, HTTPError 422)` on a 1-task project; assert the create path was called exactly once for that record, sleep never called, record in `failed`. |
+| E5 | `test_401_is_not_retried_and_reported` | Auth error is permanent. | Parametrize 401/403/404; assert exactly one call, no sleep, reported as failed (or 502 if it is the lookup call, see D5). |
+| E6 | `test_retries_are_bounded` | Never loops forever. | `fail_next(99, HTTPError 503)`; assert exactly `MAX_ATTEMPTS` calls per record, then the record is in `failed` with reason mentioning 503; sleep called `MAX_ATTEMPTS - 1` times. |
+| E7 | `test_backoff_delays_grow` | Backoff is exponential. | `fail_next(2, 503)`; assert recorded sleeps are `[0.5, 1.0]` (or whatever constants the reviewer approves). |
+| E8 | `test_429_honours_retry_after` | Uses the server's hint. | 429 with `Retry-After: 3` header; assert sleep called with `3`. |
+
+### F. Frontend trigger (4 cases; Vitest + Testing Library, `frontend/src/tests/`)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| F1 | `ProjectPage shows Export button for admin/member` | Role gate (positive). | Render with a mocked project whose current user role is `member`; assert a button named "Export to Airtable" is in the document. |
+| F2 | `ProjectPage hides Export button for viewer` | Role gate (negative). | Same with role `viewer`; assert `queryByRole('button', {name: /export/i})` is null. |
+| F3 | `clicking Export calls the export endpoint and shows result` | Wiring. | Mock `api-client` `POST /api/projects/{id}/export` → `{exported: 3, created: 3, updated: 0, failed: []}`; click; assert the call and that "Exported 3 tasks" appears. |
+| F4 | `Export shows partial-failure message` | Surface failures. | Mock response with `failed: [{...}]`; assert a message like "1 task failed" and the button is re-enabled. |
+| F5 (deferred E2E) | `viewer cannot export via API even if button is forced` | Defence in depth. | Covered server-side by A3; optional Playwright run only if the E2E suite from Part 3b exists. |
+
+Note: F cases reuse the `myRole` logic already in `frontend/src/pages/ProjectPage.tsx` (`canComment`). The button should derive from the same role check to avoid drift.
+
+---
+
+## 3. Real-integration verification (manual, not automated)
+
+One-off check after implementation, run by a human:
+
+1. Ensure `.env` has real `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `AIRTABLE_TABLE_NAME=Tasks` and the base's `Tasks` table has the fields from the mapping table (at minimum `Task ID`, `Title`, `Status`, `Project ID`).
+2. Log in as an admin, create a project with 3–5 tasks (including one unassigned), and call the endpoint once (via the UI button or `curl` with the Bearer token).
+3. Confirm the response counts (`created == n`).
+4. Read the rows back from the base (Airtable MCP `list_records_for_table`, or the Airtable UI) and confirm one row per task with matching `Task ID` and `Title`.
+5. Edit one task, call export again, confirm `updated == n, created == 0` and the row count in the base is unchanged.
+6. Record the outcome in `TERMINAL_LOG.md` / the README, never the API key.
+
+Why manual rather than CI: the real API is rate-limited (5 req/s per base), needs a secret that must not be in the repo or CI logs, writes persist in a shared base (tests would need cleanup and would conflict when run concurrently), and network latency/outages make results non-deterministic. All logic paths are covered deterministically by the fake; the manual run only proves the credentials, field names, and `pyairtable` wiring.
+
+---
+
+## 4. Open design questions for the reviewer
+
+- **Q1 Response shape.** Confirm `{exported, created, updated, failed:[{taskId, reason}], total}`. Alternative: drop `total` and keep the stub's `tasks` list (large payload for 1000 tasks; recommend dropping it).
+- **Q2 Store Airtable record id on Task?** Adding `airtable_record_id` to `Task` would avoid the "list existing rows" call and make upserts cheaper, but needs a migration and goes stale if rows are deleted in Airtable. Recommendation: no; look up by `Task ID` each run (one `all()` call with a formula, paginated by pyairtable).
+- **Q3 Sync vs async.** Plan assumes synchronous (≈1000 tasks = ~100 batch calls at 5 req/s ≈ 20–30 s, within a typical request timeout but tight). If the reviewer wants async (Celery/thread + status endpoint), groups A–E stay the same at the service level; only the HTTP tests change to assert 202 + a job id.
+- **Q4 Status field type.** Is `Status` in the base a single-select with exactly `todo/in_progress/review/done`, or should we send human labels ("In Progress") / use `typecast=True`? Affects B2's expected values.
+- **Q5 Who retries.** Own retry loop (testable call counts, as planned) vs `pyairtable`'s built-in `retry_strategy`. Recommendation: own loop, pyairtable retries disabled.
+- **Q6 Update everything or only changed rows?** Simplest: update every existing row each run (C3 expects `updated == n`). Optimisation: compare `Updated At` and skip unchanged rows, which would change C3/C2 expectations.
+- **Q7 Partial-failure HTTP status.** 200 with a `failed` list (planned) vs 207 Multi-Status. 200 is simpler for the frontend.
+- **Q8 Deleted tasks.** Rows for tasks deleted in the app remain in Airtable. Out of scope unless the reviewer wants a "delete orphaned rows" step (would need its own tests).
+- **Q9 Missing config behaviour.** 503 `airtable not configured` (planned) vs 500. Also whether the frontend should hide the button when the server reports export is unavailable.
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-task-comments.md
+# Task Comments (Part 3a) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Give every task a chronological, append-only comment thread that project members can post to and viewers can only read.
+
+**Architecture:** A new `Comment` model (child of `Task`, author is a `User`) exposed through one DRF `APIView` at `/api/tasks/<id>/comments` supporting only GET (list) and POST (create). Append-only is enforced structurally: no update/delete route exists and the model has no mutable fields. The React `TaskDetail` modal gains a comment thread that hides the compose box from viewers.
+
+**Tech Stack:** Django 5, Django REST Framework, PostgreSQL, SimpleJWT; React 18 + TypeScript + TanStack Query; pytest-django and Playwright for tests.
+
+**Spec:** Part 3a requirements — comments listed chronologically showing author/body/time; members post, viewers read-only; append-only (no edit/delete); authorization enforced correctly.
+
+## Global Constraints
+
+- Roles are `admin | member | viewer` on `Membership.role`; "can post" = `admin` or `member` (reuse `_can_edit_tasks`).
+- Read access requires membership on the task's project (non-members get 403); viewers may read.
+- Response bodies are JSON, wrapped (`{"comments": [...]}`, `{"comment": {...}}`), timestamps camelCase `createdAt`, author nested `{id, email, name}`.
+- All new DB tables use a UUID primary key and an explicit `db_table`, matching existing models.
+- Tests are written first and must fail before implementation. The red tests already exist: `backend/projects/test_comments.py` and `e2e/comments.spec.ts`.
+
+---
+
+## Data model
+
+Table `comments`:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID PK | `default=uuid4`, not editable |
+| `task_id` | FK → `tasks.id` | `on_delete=CASCADE`, `related_name='comments'` |
+| `author_id` | FK → `users.id` | `on_delete=SET_NULL`, `null=True`, `related_name='comments'` |
+| `body` | TEXT | required, non-blank (validated in the view) |
+| `created_at` | timestamptz | `auto_now_add=True` |
+
+- **No `updated_at`, no edit flag.** The absence of mutable fields is the append-only guarantee at the schema level.
+- **`author` is `SET_NULL`, deliberately not `CASCADE`.** Comments are an audit trail; removing a user must not erase what they wrote. A comment with a deleted author serializes `author: null`. (This is the opposite of the `Task.created_by` CASCADE bug found earlier, on purpose.)
+- **`task` is `CASCADE`.** A comment cannot outlive its task.
+- `Meta.ordering = ['created_at']` so every query is chronological by default; `Meta.indexes = [Index(fields=['task', 'created_at'])]` for thread fetches.
+
+## API contract
+
+### `GET /api/tasks/<uuid:task_id>/comments`
+- 401 if unauthenticated.
+- 404 if the task does not exist.
+- 403 if the caller has no membership on the task's project.
+- 200 for any member (viewers included):
+  ```json
+  { "comments": [
+    { "id": "uuid", "body": "text", "author": { "id": "uuid", "email": "a@b.dev", "name": "A B" }, "createdAt": "2026-09-11T12:00:00Z" }
+  ] }
+  ```
+  Oldest first. `author` may be `null` if the author was deleted.
+
+### `POST /api/tasks/<uuid:task_id>/comments`
+- 401 if unauthenticated.
+- 404 if the task does not exist.
+- 403 if the caller is not a member, or is a `viewer`.
+- 400 if `body` is missing, not a string, or whitespace-only. Nothing is created.
+- Author is always `request.user`; any `authorId`/`author` in the payload is ignored.
+- 201:
+  ```json
+  { "comment": { "id": "uuid", "body": "text", "author": { "id": "uuid", "email": "a@b.dev", "name": "A B" }, "createdAt": "2026-09-11T12:00:00Z" } }
+  ```
+
+### Append-only enforcement
+- No `PATCH`, `PUT`, or `DELETE` handler on the comments endpoint, so DRF returns **405 Method Not Allowed**. There is no per-comment URL at all.
+
+---
+
+## File Structure
+
+- Create `backend/projects/` model + migration for `Comment` (modify `models.py`, new migration file).
+- Modify `backend/projects/serializers.py` — add `CommentSerializer`.
+- Modify `backend/projects/views.py` — add `CommentListCreateView`.
+- Modify `backend/projects/urls.py` — add the comments route.
+- Modify `frontend/src/types/index.ts` — add `ApiComment`.
+- Modify `frontend/src/components/TaskDetail.tsx` — comment thread + compose box.
+- Modify `frontend/src/pages/ProjectPage.tsx` — compute `canComment` and pass it to `TaskDetail`.
+- Tests already present: `backend/projects/test_comments.py`, `e2e/comments.spec.ts`.
+
+---
+
+### Task 1: Comment model and migration
+
+**Files:**
+- Modify: `backend/projects/models.py`
+- Create: `backend/projects/migrations/0002_comment.py` (via makemigrations)
+
+**Interfaces:**
+- Produces: `Comment` model with fields `id, task (FK Task, related_name='comments'), author (FK User, SET_NULL, null=True, related_name='comments'), body (TextField), created_at`; `Meta.db_table='comments'`, `ordering=['created_at']`, index on `('task','created_at')`.
+
+- [ ] **Step 1: Write the failing test** (model behavior)
+
+```python
+# backend/projects/test_comments_model.py
+import pytest
+from users.models import User
+from projects.models import Project, Task, Comment
+
+@pytest.mark.django_db
+def test_comment_belongs_to_task_and_author_and_orders_by_created():
+    u = User.objects.create_user(email='a@b.dev', name='A', password='password123')
+    p = Project.objects.create(name='P', owner=u)
+    t = Task.objects.create(project=p, title='T', created_by=u)
+    c1 = Comment.objects.create(task=t, author=u, body='first')
+    c2 = Comment.objects.create(task=t, author=u, body='second')
+    assert list(t.comments.values_list('body', flat=True)) == ['first', 'second']
+    assert c1.created_at <= c2.created_at
+
+@pytest.mark.django_db
+def test_deleting_author_keeps_comment_with_null_author():
+    u = User.objects.create_user(email='a@b.dev', name='A', password='password123')
+    p = Project.objects.create(name='P', owner=u)
+    t = Task.objects.create(project=p, title='T', created_by=u)
+    keeper = User.objects.create_user(email='k@b.dev', name='K', password='password123')
+    c = Comment.objects.create(task=t, author=keeper, body='kept')
+    keeper.delete()
+    c.refresh_from_db()
+    assert c.author_id is None
+    assert c.body == 'kept'
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `docker compose exec -T backend python -m pytest projects/test_comments_model.py -v`
+Expected: FAIL — `ImportError: cannot import name 'Comment'`.
+
+- [ ] **Step 3: Implement the model**
+
+```python
+# append to backend/projects/models.py
+class Comment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='comments',
+    )
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'comments'
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['task', 'created_at'])]
+```
+
+- [ ] **Step 4: Make and apply the migration, then run tests**
+
+Run:
+```bash
+docker compose exec -T backend python manage.py makemigrations projects
+docker compose exec -T backend python manage.py migrate
+docker compose exec -T backend python -m pytest projects/test_comments_model.py -v
+```
+Expected: migration `0002_comment` created and applied; both tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/projects/models.py backend/projects/migrations/0002_comment.py backend/projects/test_comments_model.py
+git commit -m "feat: add Comment model for task comment threads"
+```
+
+---
+
+### Task 2: Comment serializer, view, and route (backend API)
+
+**Files:**
+- Modify: `backend/projects/serializers.py`
+- Modify: `backend/projects/views.py`
+- Modify: `backend/projects/urls.py`
+- Test (already red): `backend/projects/test_comments.py`
+
+**Interfaces:**
+- Consumes: `Comment` model (Task 1); helpers `_get_membership(user, project_id)`, `_can_edit_tasks(role)` in `views.py`.
+- Produces: `CommentSerializer` (fields `id, body, author (UserSerializer, read_only), createdAt (source=created_at)`); `CommentListCreateView` with `get`/`post`; route `path('tasks/<uuid:task_id>/comments', CommentListCreateView.as_view())`.
+
+- [ ] **Step 1: Confirm the pre-written tests are red**
+
+Run: `docker compose exec -T backend python -m pytest projects/test_comments.py -v`
+Expected: the read/post/role/validation tests FAIL (route returns 404). 405/404-only assertions may already pass.
+
+- [ ] **Step 2: Add the serializer**
+
+```python
+# backend/projects/serializers.py
+from .models import Project, Membership, Task, Comment  # extend existing import
+
+class CommentSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+
+    class Meta:
+        model = Comment
+        fields = ['id', 'body', 'author', 'createdAt']
+```
+
+- [ ] **Step 3: Add the view**
+
+```python
+# backend/projects/views.py
+from .models import Project, Membership, Task, Comment  # extend existing import
+from .serializers import ProjectDetailSerializer, TaskSerializer, CommentSerializer  # extend
+
+class CommentListCreateView(APIView):
+    def _task_or_none(self, task_id):
+        try:
+            return Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return None
+
+    def get(self, request, task_id):
+        task = self._task_or_none(task_id)
+        if task is None:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        membership = _get_membership(request.user, task.project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        comments = task.comments.select_related('author').order_by('created_at')
+        return Response({'comments': CommentSerializer(comments, many=True).data})
+
+    def post(self, request, task_id):
+        task = self._task_or_none(task_id)
+        if task is None:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        membership = _get_membership(request.user, task.project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot post comments'}, status=status.HTTP_403_FORBIDDEN)
+        body = request.data.get('body')
+        if not isinstance(body, str) or not body.strip():
+            return Response({'error': 'comment body is required'}, status=status.HTTP_400_BAD_REQUEST)
+        comment = Comment.objects.create(task=task, author=request.user, body=body.strip())
+        data = CommentSerializer(Comment.objects.select_related('author').get(id=comment.id)).data
+        return Response({'comment': data}, status=status.HTTP_201_CREATED)
+```
+
+- [ ] **Step 4: Add the route**
+
+```python
+# backend/projects/urls.py
+from .views import (
+    ProjectListCreateView, ProjectDetailView, TaskListCreateView,
+    TaskDetailView, ExportView, MemberAddView, CommentListCreateView,
+)
+# add to urlpatterns:
+path('tasks/<uuid:task_id>/comments', CommentListCreateView.as_view()),
+```
+
+- [ ] **Step 5: Run the comment API tests and the full suite**
+
+Run:
+```bash
+docker compose exec -T backend python -m pytest projects/test_comments.py -v
+docker compose exec -T backend python -m pytest -q
+```
+Expected: all `test_comments.py` tests PASS; full suite green. If `test_unauthenticated_request_is_rejected` sees 403 instead of 401, confirm SimpleJWT's actual code for a missing token and align the test to DRF's real behavior (do not weaken the auth).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add backend/projects/serializers.py backend/projects/views.py backend/projects/urls.py
+git commit -m "feat: add task comments list/create API (members post, viewers read-only, append-only)"
+```
+
+---
+
+### Task 3: Comment thread UI in TaskDetail (frontend + E2E)
+
+**Files:**
+- Modify: `frontend/src/types/index.ts`
+- Modify: `frontend/src/components/TaskDetail.tsx`
+- Modify: `frontend/src/pages/ProjectPage.tsx`
+- Test (already red): `e2e/comments.spec.ts`
+
+**Interfaces:**
+- Consumes: `apiFetch`, `getStoredUser` from `@/lib/api-client`; `GET/POST /api/tasks/:id/comments` (Task 2).
+- Produces: `ApiComment` type; a comment thread rendered in `TaskDetail` with these exact test hooks the E2E targets — `data-testid="comment-list"`, `data-testid="comment-item"` per comment, `data-testid="comment-input"` on the textarea, `data-testid="comment-timestamp"` on each comment's time element, and a submit button whose accessible name matches `/post|comment/i`. Each item shows author name and `createdAt`. Compose box renders only when `canComment` is true.
+
+- [ ] **Step 1: Add the type**
+
+```typescript
+// frontend/src/types/index.ts
+export type ApiComment = {
+  id: string;
+  body: string;
+  author: ApiUser | null;
+  createdAt: string;
+};
+```
+
+- [ ] **Step 2: Compute canComment and pass it down**
+
+```tsx
+// frontend/src/pages/ProjectPage.tsx
+import { apiFetch, getToken, getStoredUser } from "@/lib/api-client";
+// after `const project = data?.project;`
+const me = getStoredUser();
+const myRole = project?.memberships.find((m) => m.user.id === me?.id)?.role;
+const canComment = myRole === "admin" || myRole === "member";
+// in the TaskDetail usage, add:  canComment={canComment}
+```
+
+- [ ] **Step 3: Render the thread in TaskDetail**
+
+Add `canComment: boolean` to `Props`. Inside the modal body add:
+
+```tsx
+const { data: commentsData } = useQuery({
+  queryKey: ["task", task.id, "comments"],
+  queryFn: () => apiFetch<{ comments: ApiComment[] }>(`/api/tasks/${task.id}/comments`),
+});
+const [commentBody, setCommentBody] = useState("");
+const postComment = useMutation({
+  mutationFn: (body: string) =>
+    apiFetch<{ comment: ApiComment }>(`/api/tasks/${task.id}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }),
+  onSuccess: () => {
+    setCommentBody("");
+    queryClient.invalidateQueries({ queryKey: ["task", task.id, "comments"] });
+  },
+});
+```
+
+```tsx
+<section className="mt-6">
+  <h3 className="text-sm font-medium mb-2">Comments</h3>
+  <ul data-testid="comment-list" className="space-y-2">
+    {(commentsData?.comments ?? []).map((c) => (
+      <li key={c.id} data-testid="comment-item" className="text-sm border border-border rounded p-2">
+        <div className="flex justify-between text-xs text-muted">
+          <span>{c.author?.name ?? "unknown"}</span>
+          <time data-testid="comment-timestamp" dateTime={c.createdAt}>{new Date(c.createdAt).toLocaleString()}</time>
+        </div>
+        <p className="mt-1 whitespace-pre-wrap">{c.body}</p>
+      </li>
+    ))}
+  </ul>
+  {canComment && (
+    <form
+      className="mt-3 flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!commentBody.trim()) return;
+        postComment.mutate(commentBody.trim());
+      }}
+    >
+      <textarea
+        data-testid="comment-input"
+        value={commentBody}
+        onChange={(e) => setCommentBody(e.target.value)}
+        placeholder="add a comment"
+        className="flex-1 rounded-md bg-bg border border-border px-3 py-2 text-sm"
+      />
+      <button type="submit" disabled={postComment.isPending}
+        className="bg-accent text-white text-sm font-medium rounded-md px-4 disabled:opacity-50">
+        Post comment
+      </button>
+    </form>
+  )}
+</section>
+```
+
+No edit or delete control is rendered on a comment item — append-only in the UI.
+
+- [ ] **Step 4: Run the frontend unit tests, then the E2E**
+
+Run:
+```bash
+docker compose exec -T frontend npm test -- --run
+cd e2e && npx playwright test --reporter=list
+```
+Expected: existing vitest suite still green; `comment thread flow` E2E PASSES end to end (member posts two comments in order, no edit/delete control, viewer sees comments with no compose box).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add frontend/src/types/index.ts frontend/src/components/TaskDetail.tsx frontend/src/pages/ProjectPage.tsx
+git commit -m "feat: task comment thread UI with viewer read-only gating"
+```
+
+---
+
+## Self-review
+
+- **Chronological listing:** Task 1 `Meta.ordering` + Task 2 `order_by('created_at')` + Task 3 render order. Covered.
+- **Author/body/time shown:** `CommentSerializer` fields + Task 3 item markup. Covered.
+- **Members post, viewers read:** Task 2 `_can_edit_tasks` gate (403) + Task 3 `canComment`. Covered by `test_role_can_or_cannot_post` and the E2E viewer step.
+- **Append-only:** no mutable fields (Task 1), no update/delete route → 405 (Task 2), no edit/delete UI (Task 3). Covered by `test_comment_cannot_be_edited/deleted`.
+- **Authorization correct:** 401/403/404 paths in Task 2. Covered by the non-member and unauthenticated tests.
+- **Type consistency:** `createdAt`, `author {id,email,name}`, wrapped `{comments}`/`{comment}` used identically in serializer, tests, and frontend type.
+[exit 0]
+
+$ grep -n 'environ\|AIRTABLE\|REST_FRAMEWORK\|DEFAULT_AUTH\|DEFAULT_PERM' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/config/settings.py
+ugrep: warning: /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/config/settings.py: No such file or directory
+[exit 2]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages/ProjectPage.tsx
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiFetch, getToken, getStoredUser } from "@/lib/api-client";
+import { Header } from "@/components/Header";
+import { StatusColumn } from "@/components/StatusColumn";
+import { TaskDetail } from "@/components/TaskDetail";
+import type { ApiProjectDetail, ApiTask, TaskStatus } from "@/types";
+import { STATUS_ORDER } from "@/types";
+
+export default function ProjectPage() {
+  const navigate = useNavigate();
+  const { id } = useParams<{ id: string }>();
+  const queryClient = useQueryClient();
+
+  const [activeTask, setActiveTask] = useState<ApiTask | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [newColumn, setNewColumn] = useState<TaskStatus>("todo");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!getToken()) navigate("/login", { replace: true });
+  }, [navigate]);
+
+  const { data, isLoading, error: queryError } = useQuery({
+    queryKey: ["project", id],
+    queryFn: () => apiFetch<{ project: ApiProjectDetail }>(`/api/projects/${id}`),
+  });
+
+  const createTask = useMutation({
+    mutationFn: (input: { title: string; status: TaskStatus }) =>
+      apiFetch<{ task: ApiTask }>(`/api/projects/${id}/tasks`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      setNewTitle("");
+      queryClient.invalidateQueries({ queryKey: ["project", id] });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "create failed"),
+  });
+
+  const project = data?.project;
+  const me = getStoredUser();
+  const myRole = project?.memberships.find((m) => m.user.id === me?.id)?.role;
+  const canComment = myRole === "admin" || myRole === "member";
+  const tasksByStatus: Record<TaskStatus, ApiTask[]> = {
+    todo: [],
+    in_progress: [],
+    review: [],
+    done: [],
+  };
+  if (project) {
+    for (const t of project.tasks) {
+      tasksByStatus[t.status].push(t);
+    }
+  }
+
+  return (
+    <div className="min-h-screen">
+      <Header />
+
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        <Link
+          to="/dashboard"
+          className="text-sm text-muted hover:text-white"
+        >
+          ← all projects
+        </Link>
+
+        {isLoading && <p className="text-muted text-sm mt-6">loading…</p>}
+        {queryError && (
+          <p className="text-sm text-red-400 mt-6">
+            {queryError instanceof Error ? queryError.message : "failed to load"}
+          </p>
+        )}
+
+        {project && (
+          <>
+            <div className="flex items-start justify-between mt-4 mb-8">
+              <div>
+                <h1 className="text-2xl font-semibold">{project.name}</h1>
+                {project.description && (
+                  <p className="text-sm text-muted mt-1 max-w-2xl">
+                    {project.description}
+                  </p>
+                )}
+                <p className="text-xs text-muted mt-2">
+                  owner: {project.owner.name} · {project.memberships.length} members
+                </p>
+              </div>
+            </div>
+
+            <section className="bg-surface border border-border rounded-lg p-4 mb-6">
+              <h2 className="text-sm font-medium mb-3">add a task</h2>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newTitle.trim()) return;
+                  setError(null);
+                  createTask.mutate({ title: newTitle.trim(), status: newColumn });
+                }}
+                className="flex gap-2"
+              >
+                <input
+                  type="text"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="task title"
+                  className="flex-1 rounded-md bg-bg border border-border px-3 py-2 text-sm focus:border-accent focus:outline-none"
+                />
+                <select
+                  value={newColumn}
+                  onChange={(e) => setNewColumn(e.target.value as TaskStatus)}
+                  className="rounded-md bg-bg border border-border px-3 py-2 text-sm focus:border-accent focus:outline-none"
+                >
+                  {STATUS_ORDER.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  disabled={createTask.isPending}
+                  className="bg-accent hover:bg-indigo-500 text-white text-sm font-medium rounded-md px-4 disabled:opacity-50"
+                >
+                  add
+                </button>
+              </form>
+              {error && (
+                <p className="text-sm text-red-400 mt-2" role="alert">
+                  {error}
+                </p>
+              )}
+            </section>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {STATUS_ORDER.map((s) => (
+                <StatusColumn
+                  key={s}
+                  status={s}
+                  tasks={tasksByStatus[s]}
+                  onTaskClick={setActiveTask}
+                />
+              ))}
+            </div>
+
+            <section className="mt-10">
+              <h2 className="text-sm font-medium mb-3">members</h2>
+              <ul className="bg-surface border border-border rounded-lg divide-y divide-border">
+                {project.memberships.map((m) => (
+                  <li
+                    key={m.id}
+                    className="px-4 py-3 flex items-center justify-between text-sm"
+                  >
+                    <span>{m.user.name}</span>
+                    <span className="text-xs text-muted">
+                      {m.user.email} · {m.role}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </>
+        )}
+      </main>
+
+      {activeTask && project && (
+        <TaskDetail
+          task={activeTask}
+          projectId={id!}
+          members={project.memberships}
+          canComment={canComment}
+          onClose={() => setActiveTask(null)}
+        />
+      )}
+    </div>
+  );
+}
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/lib/api-client.ts
+const TOKEN_KEY = "taskboard_token";
+const USER_KEY = "taskboard_user";
+
+export type StoredUser = { id: string; email: string; name: string };
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function getStoredUser(): StoredUser | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as StoredUser;
+  } catch {
+    return null;
+  }
+}
+
+export function setSession(token: string, user: StoredUser) {
+  window.localStorage.setItem(TOKEN_KEY, token);
+  window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+export function clearSession() {
+  window.localStorage.removeItem(TOKEN_KEY);
+  window.localStorage.removeItem(USER_KEY);
+}
+
+export async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = getToken();
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(path, { ...options, headers });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+
+  if (!res.ok) {
+    const message = (data && (data.error as string)) || `request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+[exit 0]
+
+$ ls /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/tests /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/components /Users/bharath/Desktop/AjackusAssignment/q-taskboard/e2e 2>&1
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/e2e:
+comments.spec.ts
+node_modules
+package-lock.json
+package.json
+playwright.config.ts
+test-results
+
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/components:
+Header.tsx
+StatusColumn.tsx
+TaskCard.tsx
+TaskDetail.tsx
+
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/tests:
+TaskCard.test.tsx
+schemas.test.ts
+setup.ts
+[exit 0]
+
+$ sed -n 1,60p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/test_comments.py
+import pytest
+from rest_framework.test import APIClient
+from users.models import User
+from projects.models import Project, Membership, Task
+
+
+@pytest.fixture
+def client():
+    return APIClient()
+
+
+@pytest.fixture
+def owner(db):
+    return User.objects.create_user(
+        email='owner@taskboard.dev', name='Olive Owner', password='password123'
+    )
+
+
+@pytest.fixture
+def project(owner):
+    project = Project.objects.create(name='Comment Project', owner=owner)
+    Membership.objects.create(user=owner, project=project, role='admin')
+    return project
+
+
+@pytest.fixture
+def task(project, owner):
+    return Task.objects.create(project=project, title='A task', created_by=owner)
+
+
+def make_user(email, name='Test User'):
+    return User.objects.create_user(email=email, name=name, password='password123')
+
+
+def authed_client(user):
+    """Return an APIClient with a Bearer token for the given user."""
+    client = APIClient()
+    response = client.post(
+        '/api/auth/login',
+        {'email': user.email, 'password': 'password123'},
+        format='json',
+    )
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['token']}")
+    return client
+
+
+def member_client(project, email, role):
+    """Create a user with `role` membership on `project` and return an authed client."""
+    user = make_user(email, name=f'{role.title()} User')
+    Membership.objects.create(user=user, project=project, role=role)
+    return user, authed_client(user)
+
+
+def comments_url(task_id):
+    return f'/api/tasks/{task_id}/comments'
+
+
+@pytest.mark.django_db
+class TestComments:
+    def test_comments_returned_oldest_first(self, project, task):
+[exit 0]
+
+$ grep -n 'ApiProject\|ApiMembership\|ApiTask\|role' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/types/index.ts
+10:export type ApiTask = {
+31:export type ApiProjectMember = {
+33:  role: Role;
+37:export type ApiProjectDetail = {
+43:  memberships: ApiProjectMember[];
+44:  tasks: ApiTask[];
+[exit 0]
+
+$ docker compose -f /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docker-compose.yml exec -T backend python -c "import pyairtable, inspect; print(pyairtable.__version__); from pyairtable import Table; print(inspect.signature(Table.batch_create)); print(inspect.signature(Table.batch_update)); print(inspect.signature(Table.all)); from pyairtable import Api; print(inspect.signature(Api.__init__)); import pyairtable.exceptions as e; print([n for n in dir(e) if not n.startswith('_')])" 2>&1 | head -30
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'pyairtable.exceptions'
+2.3.7
+(self, records: Iterable[Dict[str, Union[NoneType, str, int, float, bool, pyairtable.api.types.CollaboratorDict, pyairtable.api.types.CollaboratorEmailDict, pyairtable.api.types.BarcodeDict, List[str], List[pyairtable.api.types.AttachmentDict], List[pyairtable.api.types.CreateAttachmentDict], List[pyairtable.api.types.CollaboratorDict], List[pyairtable.api.types.CollaboratorEmailDict]]]], typecast: bool = False, return_fields_by_field_id: bool = False) -> List[pyairtable.api.types.RecordDict]
+(self, records: Iterable[pyairtable.api.types.UpdateRecordDict], replace: bool = False, typecast: bool = False, return_fields_by_field_id: bool = False) -> List[pyairtable.api.types.RecordDict]
+(self, **options: Any) -> List[pyairtable.api.types.RecordDict]
+(self, api_key: str, *, timeout: Optional[Tuple[int, int]] = None, retry_strategy: Union[bool, urllib3.util.retry.Retry, NoneType] = True, endpoint_url: str = 'https://api.airtable.com')
+[exit 0]
+
+$ find /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend -name settings.py -not -path '*/node_modules/*'
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py
+[exit 0]
+
+$ grep -rn 'environ\|AIRTABLE\|REST_FRAMEWORK\|DEFAULT_AUTH\|DEFAULT_PERM' $(find /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend -name settings.py) | head -30
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:7:SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-change-me-in-production')
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:8:DEBUG = os.environ.get('DEBUG', 'true').lower() == 'true'
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:31:        'NAME': os.environ.get('POSTGRES_DB', 'taskboard'),
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:32:        'USER': os.environ.get('POSTGRES_USER', 'taskboard'),
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:33:        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'taskboard'),
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:34:        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:35:        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:42:REST_FRAMEWORK = {
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:43:    'DEFAULT_AUTHENTICATION_CLASSES': [
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py:46:    'DEFAULT_PERMISSION_CLASSES': [
+[exit 0]
+
+$ sed -n 1,40p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/tests/TaskCard.test.tsx; cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/tests/setup.ts
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { TaskCard } from "@/components/TaskCard";
+import type { ApiTask } from "@/types";
+
+const baseTask: ApiTask = {
+  id: "t_1",
+  projectId: "p_1",
+  title: "Set up analytics",
+  description: null,
+  status: "todo",
+  assigneeId: "u_1",
+  createdById: "u_1",
+  position: 0,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  assignee: { id: "u_1", name: "Meera Iyer", email: "meera@taskboard.dev" },
+};
+
+describe("<TaskCard />", () => {
+  it("renders the task title and assignee", () => {
+    render(<TaskCard task={baseTask} />);
+    expect(screen.getByText("Set up analytics")).toBeInTheDocument();
+    expect(screen.getByText("Meera Iyer")).toBeInTheDocument();
+  });
+
+  it("falls back to 'unassigned' when there is no assignee", () => {
+    render(<TaskCard task={{ ...baseTask, assignee: null, assigneeId: null }} />);
+    expect(screen.getByText("unassigned")).toBeInTheDocument();
+  });
+
+  it("invokes onClick with the task when clicked", () => {
+    const onClick = vi.fn();
+    render(<TaskCard task={baseTask} onClick={onClick} />);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onClick).toHaveBeenCalledWith(baseTask);
+  });
+});
+import '@testing-library/jest-dom';
+[exit 0]
+
+$ grep -n -i 'airtable' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md /Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md 2>/dev/null | head -20
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md:114:- `POST /api/projects/:id/export` — Export tasks to Airtable (admin or member)
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md:116:## Airtable Export (Part 3c)
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md:121:AIRTABLE_API_KEY=your_personal_access_token
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md:122:AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md:123:AIRTABLE_TABLE_NAME=Tasks
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md:126:The backend uses `pyairtable` for real API calls. `backend/projects/airtable_mock.py` is a test double — use it in unit tests, not in production code.
+[exit 0]
+
+$ docker compose -f /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docker-compose.yml exec -T backend python -c "import inspect, pyairtable.api.api as a; src=inspect.getsource(a.Api._process_response) if hasattr(a.Api,'_process_response') else inspect.getsource(a.Api.request); print(src[:2500])" 2>&1 | head -80
+    def _process_response(self, response: requests.Response) -> Any:
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            # Attempt to get Error message from response, Issue #16
+            try:
+                error_dict = response.json()
+            except ValueError:
+                pass
+            else:
+                if "error" in error_dict:
+                    exc.args = (*exc.args, repr(error_dict["error"]))
+            raise exc
+
+        # Some Airtable endpoints will respond with an empty body and a 200.
+        if not response.text:
+            return None
+        return response.json()
+
+[exit 0]
+
+$ docker compose -f /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docker-compose.yml exec -T backend python -c "import inspect, pyairtable.api.table as t; print(inspect.getsource(t.Table.batch_create)[:1500])" 2>&1 | head -50
+    def batch_create(
+        self,
+        records: Iterable[WritableFields],
+        typecast: bool = False,
+        return_fields_by_field_id: bool = False,
+    ) -> List[RecordDict]:
+        """
+        Create a number of new records in batches.
+
+        >>> table.batch_create([{'Name': 'John'}, {'Name': 'Marc'}])
+        [
+            {
+                'id': 'recW9e0c9w0er9gug',
+                'createdTime': '2017-03-14T22:04:31.000Z',
+                'fields': {'Name': 'John'}
+            },
+            {
+                'id': 'recW9e0c9w0er9guh',
+                'createdTime': '2017-03-14T22:04:31.000Z',
+                'fields': {'Name': 'Marc'}
+            }
+        ]
+
+        Args:
+            records: Iterable of dicts representing records to be created.
+            typecast: |kwarg_typecast|
+            return_fields_by_field_id: |kwarg_return_fields_by_field_id|
+        """
+        inserted_records = []
+
+        # If we got an iterator, exhaust it and collect it into a list.
+        records = list(records)
+
+        for chunk in self.api.chunked(records):
+            new_records = [{"fields": fields} for fields in chunk]
+            response = self.api.post(
+                url=self.url,
+                json={
+                    "records": new_records,
+                    "typecast": typecast,
+                    "returnFieldsByFieldId": return_fields_by_field_id,
+                },
+            )
+            inserted_records += assert_typed_dicts(RecordDict, res
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/types/index.ts
+export type Role = "admin" | "member" | "viewer";
+export type TaskStatus = "todo" | "in_progress" | "review" | "done";
+
+export type ApiUser = {
+  id: string;
+  email: string;
+  name: string;
+};
+
+export type ApiTask = {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  status: TaskStatus;
+  assigneeId: string | null;
+  createdById: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
+  assignee?: ApiUser | null;
+};
+
+export type ApiComment = {
+  id: string;
+  body: string;
+  author: ApiUser | null;
+  createdAt: string;
+};
+
+export type ApiProjectMember = {
+  id: string;
+  role: Role;
+  user: ApiUser;
+};
+
+export type ApiProjectDetail = {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerId: string;
+  owner: ApiUser;
+  memberships: ApiProjectMember[];
+  tasks: ApiTask[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const STATUS_LABELS: Record<TaskStatus, string> = {
+  todo: "To do",
+  in_progress: "In progress",
+  review: "In review",
+  done: "Done",
+};
+
+export const STATUS_ORDER: TaskStatus[] = ["todo", "in_progress", "review", "done"];
+[exit 0]
+
+$ cat /Users/bharath/.claude/projects/-Users-bharath-Desktop-AjackusAssignment/memory/ajackus-assignment-setup.md
+---
+name: ajackus-assignment-setup
+description: "Ajackus senior fullstack take-home (q-taskboard) setup state, Airtable base ID, decisions made on 2026-09-11"
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: d0bde466-5e15-416b-a2af-7367e18a9871
+  modified: 2026-09-11T10:08:25.733Z
+---
+
+Ajackus take-home assignment (Django 5 + DRF + React/Vite), repo cloned at
+`~/Desktop/AjackusAssignment/q-taskboard` from https://github.com/ajackus/q-taskboard.
+Submission must be a repo created from that template (use `gh repo create --template`), no squashing.
+
+Setup done 2026-09-11: Docker Desktop installed and running (compose v5.5.1), Airtable MCP
+connected (hosted, OAuth). Airtable base `TaskBoard` created: base ID `appsV4DNqelOPnUZn`,
+table `Tasks` (`tblRCEOAR63H18uwP`) with fields Title (primary), Task ID, Project, Project ID,
+Status (todo/in_progress/review/done), Assignee, Description, Position. `Task ID` is the
+idempotency key for re-runs.
+
+Decisions: use Docker path for setup (reviewers should be able to run it). Follow repo README
+(pyairtable, backend mock) over stale PDF (npm airtable). Plan 3a comments first, 3b activity feed
+if time. User records with macOS screen recording, not Loom. User wants approval before installs.
+
+**Why:** the assignment is timed (90-100 min) and reviewers read commit history + terminal log.
+**How to apply:** don't start implementation before the recording and `script -a terminal_log.txt`
+are running; commit after each part with clear messages.
+[exit 0]
+
+$ sed -n 110,135p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/README.md
+- `PATCH /api/tasks/:id` — Update a task (authenticated)
+- `DELETE /api/tasks/:id` — Delete a task (admin or member)
+
+### Export
+- `POST /api/projects/:id/export` — Export tasks to Airtable (admin or member)
+
+## Airtable Export (Part 3c)
+
+Set these in your `.env` before running the export:
+
+```
+AIRTABLE_API_KEY=your_personal_access_token
+AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
+AIRTABLE_TABLE_NAME=Tasks
+```
+
+The backend uses `pyairtable` for real API calls. `backend/projects/airtable_mock.py` is a test double — use it in unit tests, not in production code.
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React 18, Vite 5, TypeScript 5 (strict) |
+| Routing | React Router 6 |
+| Data fetching | TanStack Query 5 |
+| Styling | Tailwind CSS 3 |
+[exit 0]
+
+$ grep -n 'Status\|Assignee\|single\|select' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/TERMINAL_LOG.md | grep -i 'airtable\|field\|create_table\|singleSelect' | head -20
+9065:| `Task ID` | `task.id` (UUID string) | Idempotency key. Must exist in the base as a single-line text field. |
+9068:| `Status` | `task.status` | Sent as the raw value (`todo`, `in_progress`, `review`, `done`). If the base field is single-select, the choices must match exactly, or the base must allow `typecast=True`. Open question Q4. |
+9126:| B2 | `test_field_mapping` | Row fields match the mapping table. | One task with title/description/status/assignee/position; assert the created record's fields exactly (`Task ID`, `Title`, `Status`, `Assignee` email, `Project ID`, ...). |
+9185:1. Ensure `.env` has real `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `AIRTABLE_TABLE_NAME=Tasks` and the base's `Tasks` table has the fields from the mapping table (at minimum `Task ID`, `Title`, `Status`, `Project ID`).
+9201:- **Q4 Status field type.** Is `Status` in the base a single-select with exactly `todo/in_progress/review/done`, or should we send human labels ("In Progress") / use `typecast=True`? Affects B2's expected values.
+10205:$ grep -n 'Status\|Assignee\|single\|select' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/TERMINAL_LOG.md | grep -i 'airtable\|field\|create_table\|singleSelect' | head -20
+[exit 0]
+
+$ ls /Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md && grep -n '^#' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md
+1:# q-taskboard
+3:## Running with Docker
+10:## API gotchas
+17:## Frontend build gotcha
+21:## Logging
+25:## Terminal logging (mandatory)
+36:## Context management
+41:## Model and subagent policy
+[exit 0]
+
+$ sed -n 40,60p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/taskboard/settings.py
+APPEND_SLASH = False
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
+
+CORS_ALLOW_ALL_ORIGINS = True
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'UTC'
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/vite.config.ts 2>/dev/null | head -40; ls /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { resolve } from 'path';
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': {
+        target: process.env.API_TARGET ?? 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
+  },
+});
+Dockerfile
+index.html
+node_modules
+package.json
+postcss.config.js
+src
+tailwind.config.ts
+tsconfig.json
+vite.config.ts
+vitest.config.ts
+[exit 0]
+
+$ sed -i '' 's/^def export_project_tasks(project, client=None, sleep=time.sleep):$/def export_project_tasks(project, client=None, sleep=None):/' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md
+[exit 0]
+
+$ grep -n 'sleep=time.sleep\|sleep=None' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md
+9:**Architecture:** The existing stub `ExportView` (`POST /api/projects/<uuid:project_id>/export`) keeps its auth checks and delegates to a new pure service, `export_project_tasks(project, client=None, sleep=time.sleep)` in `backend/projects/airtable_export.py`. The service depends on a three-method client protocol (`all`, `batch_create`, `batch_update`) that both `pyairtable.Table` and a new in-memory `FakeAirtableTable` (`backend/projects/airtable_mock.py`) satisfy. Each run looks up the project's existing rows by `Task ID`, splits tasks into create/update, sends chunks of 10 through a bounded retry wrapper, falls back to single-record sends when a chunk fails permanently, and returns `{exported, created, updated, failed, total}`. The React project page gains an "Export to Airtable" button for admins/members that shows the counts.
+159:def export_project_tasks(project, client=None, sleep=None) -> ExportResult:
+160:    """client=None -> get_table(); sleep=None -> time.sleep (resolved at call time so tests can patch it).
+477:- Produces: `task_to_fields(task, project)`, `ExportResult`, `AirtableNotConfigured`, `get_table()`, `export_project_tasks(project, client=None, sleep=time.sleep)` (create path only; update path in Task 3, retries in Task 4, fallback in Task 5). Constants `BATCH_SIZE`, `MAX_ATTEMPTS`, `BACKOFF_BASE_SECONDS`.
+575:def export_project_tasks(project, client=None, sleep=None):
+967:Note on the `sleep` patch: the view calls the service without a `sleep` argument. A default of `sleep=time.sleep` would bind the real function at import time and defeat the fixture, so the service declares `sleep=None` and resolves `sleep = sleep or time.sleep` inside the call. The fixture's `monkeypatch.setattr(airtable_export.time, 'sleep', no_sleep)` then keeps HTTP tests instant.
+[exit 0]
+
+$ sed -n 10,16p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md
+## API gotchas
+
+- Login (`POST /api/auth/login`) returns `{"user": {...}, "token": "..."}`. The JWT key is `token`, not `access`.
+- `GET /api/projects` returns `{"projects": [...]}`, not a bare list.
+- DB table names are `users`, `projects`, `memberships`, `tasks` (custom `db_table`), not Django defaults like `users_user`.
+- Task comments: `GET/POST /api/tasks/<id>/comments`. Members/admins post, viewers read-only (403 on post), append-only (PATCH/PUT/DELETE → 405). Response shape `{"comments": [{id, body, author:{id,email,name}|null, createdAt}]}`, oldest first.
+
+[exit 0]
+
+$ grep -c '' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md
+1237
+[exit 0]
+
+$ sed -i '' 's/export_project_tasks(project, client=None, sleep=time.sleep)/export_project_tasks(project, client=None, sleep=None)/g' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md && grep -c 'sleep=time.sleep)' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md
+0
+[exit 1]
+
+$ python3 - <<'EOF'
+p='/Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md'
+s=open(p).read()
+marker='- Task comments: `GET/POST /api/tasks/<id>/comments`.'
+i=s.index(marker); j=s.index('
+', i)+1
+add=('- Airtable export (3c, design in docs/superpowers/plans/2026-09-11-airtable-export.md): the base\'s `Tasks` table has exactly eight fields — Title, Task ID, Project, Project ID, Status, Assignee, Description, Position. Sending any other field name returns 422 UNKNOWN_FIELD_NAME. `Task ID` is the idempotency key. pyairtable 2.3.x raises plain `requests.HTTPError` (status on `exc.response`) and retries by default; build `Api(key, retry_strategy=False)` so unit-test call counts stay exact.
+')
+open(p,'w').write(s[:j]+add+s[j:])
+EOF
+[exit 0]
+
+$ sed -n 15,17p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md | cut -c1-120
+- Task comments: `GET/POST /api/tasks/<id>/comments`. Members/admins post, viewers read-only (403 on post), append-only 
+- Airtable export (3c, design in docs/superpowers/plans/2026-09-11-airtable-export.md): the base's `Tasks` table has exa
+
+[exit 0]
+
+$ echo '# subagent: export-design — done; plan at docs/superpowers/plans/2026-09-11-airtable-export.md'
+# subagent: export-design — done; plan at docs/superpowers/plans/2026-09-11-airtable-export.md
+[exit 0]
+
+$ docker compose exec -T backend python -c 'import pyairtable, inspect; print("version:", pyairtable.__version__); from pyairtable import Table; print(inspect.signature(Table.batch_upsert)); import typing; print("return annotation:", inspect.signature(Table.batch_upsert).return_annotation)'
+version: 2.3.7
+(self, records: Iterable[Dict[str, Any]], key_fields: List[str], replace: bool = False, typecast: bool = False, return_fields_by_field_id: bool = False) -> pyairtable.api.types.UpsertResultDict
+return annotation: <class 'pyairtable.api.types.UpsertResultDict'>
+[exit 0]
+
+$ docker compose exec -T backend python -c 'from pyairtable import Table; print(Table.batch_upsert.__doc__)'
+
+        Update or create records in batches, either using ``id`` (if given) or using a set of
+        fields (``key_fields``) to look for matches. For more information on how this operation
+        behaves, see Airtable's API documentation for `Update multiple records <https://airtable.com/developers/web/api/update-multiple-records#request-performupsert-fieldstomergeon>`__.
+
+        .. versionadded:: 1.5.0
+
+        Args:
+            records: Records to update.
+            key_fields: List of field names that Airtable should use to match
+                records in the input with existing records on the server.
+            replace: |kwarg_replace|
+            typecast: |kwarg_typecast|
+            return_fields_by_field_id: |kwarg_return_fields_by_field_id|
+
+        Returns:
+            Lists of created/updated record IDs, along with the list of all records affected.
+        
+[exit 0]
+
+$ docker compose -f /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docker-compose.yml exec -T backend python -c "import inspect, pyairtable.api.table as t; print(inspect.signature(t.Table.batch_upsert)); print(inspect.getsource(t.Table.batch_upsert))" 2>&1 | grep -v '^\s*$' | sed -n 1,90p
+(self, records: Iterable[Dict[str, Any]], key_fields: List[str], replace: bool = False, typecast: bool = False, return_fields_by_field_id: bool = False) -> pyairtable.api.types.UpsertResultDict
+    def batch_upsert(
+        self,
+        records: Iterable[Dict[str, Any]],
+        key_fields: List[FieldName],
+        replace: bool = False,
+        typecast: bool = False,
+        return_fields_by_field_id: bool = False,
+    ) -> UpsertResultDict:
+        """
+        Update or create records in batches, either using ``id`` (if given) or using a set of
+        fields (``key_fields``) to look for matches. For more information on how this operation
+        behaves, see Airtable's API documentation for `Update multiple records <https://airtable.com/developers/web/api/update-multiple-records#request-performupsert-fieldstomergeon>`__.
+        .. versionadded:: 1.5.0
+        Args:
+            records: Records to update.
+            key_fields: List of field names that Airtable should use to match
+                records in the input with existing records on the server.
+            replace: |kwarg_replace|
+            typecast: |kwarg_typecast|
+            return_fields_by_field_id: |kwarg_return_fields_by_field_id|
+        Returns:
+            Lists of created/updated record IDs, along with the list of all records affected.
+        """
+        # If we got an iterator, exhaust it and collect it into a list.
+        records = list(records)
+        # The API will reject a request where a record is missing any of fieldsToMergeOn,
+        # but we might not reach that error until we've done several batch operations.
+        # To spare implementers from having to recover from a partially applied upsert,
+        # and to simplify our API, we will raise an exception before any network calls.
+        for record in records:
+            if "id" in record:
+                continue
+            missing = set(key_fields) - set(record.get("fields", []))
+            if missing:
+                raise ValueError(f"missing {missing!r} in {record['fields'].keys()!r}")
+        method = "put" if replace else "patch"
+        result: UpsertResultDict = {
+            "updatedRecords": [],
+            "createdRecords": [],
+            "records": [],
+        }
+        for chunk in self.api.chunked(records):
+            formatted_records = [
+                {k: v for (k, v) in record.items() if k in ("id", "fields")}
+                for record in chunk
+            ]
+            response = self.api.request(
+                method=method,
+                url=self.url,
+                json={
+                    "records": formatted_records,
+                    "typecast": typecast,
+                    "returnFieldsByFieldId": return_fields_by_field_id,
+                    "performUpsert": {"fieldsToMergeOn": key_fields},
+                },
+            )
+            result["updatedRecords"].extend(response["updatedRecords"])
+            result["createdRecords"].extend(response["createdRecords"])
+            result["records"].extend(
+                assert_typed_dicts(RecordDict, response["records"])
+            )
+        return result
+[exit 0]
+
+$ docker compose -f /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docker-compose.yml exec -T backend python -c "import inspect, pyairtable.api.types as ty; print(inspect.getsource(ty.UpsertResultDict)); import pyairtable.api.api as a; print(inspect.getsource(a.Api.chunked)); print(a.Api.MAX_RECORDS_PER_REQUEST if hasattr(a.Api,'MAX_RECORDS_PER_REQUEST') else [n for n in dir(a) if 'MAX' in n])" 2>&1 | sed -n 1,60p
+class UpsertResultDict(TypedDict):
+    """
+    A ``dict`` representing the payload returned by the Airtable API after an upsert.
+    For more details on this data structure, see the
+    `Update multiple records <https://airtable.com/developers/web/api/update-multiple-records>`__
+    API documentation.
+
+    Usage:
+        >>> table.batch_upsert(records, key_fields=["Name"])
+        {
+            'createdRecords': [...],
+            'updatedRecords': [...],
+            'records': [...]
+        }
+    """
+
+    createdRecords: List[RecordId]
+    updatedRecords: List[RecordId]
+    records: List[RecordDict]
+
+    def chunked(self, iterable: Sequence[T]) -> Iterator[Sequence[T]]:
+        """
+        Iterate through chunks of the given sequence that are equal in size
+        to the maximum number of records per request allowed by the API.
+        """
+        return chunked(iterable, self.MAX_RECORDS_PER_REQUEST)
+
+10
+[exit 0]
+
+$ grep -n 'batch_create\|batch_update\|_lookup_existing\|AirtableLookupFailed\|502\|_chunks\|placeholder\|BATCH_SIZE' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md
+34:| D2 | Idempotency mechanism | Server-side upsert: `table.batch_upsert(records, key_fields=['Task ID'], typecast=True)`. Airtable matches existing rows on `Task ID` inside the request, so two concurrent exports do not both see "no row yet" and create duplicates (no client-side read-then-write window). Counts come from `createdRecords` / `updatedRecords` in the return value. No `all()` lookup, no `airtable_record_id` column. | Manual `all()` + split + `batch_create`/`batch_update` (TOCTOU race); or a `Task.airtable_record_id` column (migration, goes stale). | Locked |
+37:| D5 | Partial-failure status | HTTP 200 with a non-empty `failed` list. Non-200 only for 401/403, 404 (project missing), 503 (not configured). There is no 502 case any more: with upsert there is no preliminary lookup, and a total write failure is reported per record in `failed`. | 207 Multi-Status. | Locked |
+140:TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+264:| 500/502/503/504 then OK | 2 | 1 (0.5) | success |
+470:def test_fail_for_task_id_applies_earlier_chunks_then_raises():
+740:    @pytest.mark.parametrize('status', [429, 500, 502, 503, 504])
+1240:- **Test-plan alignment:** response shape, 503, retry constants (3 attempts, 0.5/1.0), `""` for empty assignee, fallback call pattern (1 × N then N × 1) match the updated `docs/3c-airtable-export-test-plan.md`. Two points for the test-plan author: the 502 lookup case no longer exists (D5), and the eight-field mapping (D6).
+[exit 0]
+
+$ python3 - <<'EOF'
+p='/Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md'
+s=open(p).read()
+old='`Task ID` is the idempotency key. pyairtable 2.3.x raises'
+new='Idempotency is server-side: one `Table.batch_upsert(records, key_fields=["Task ID"], typecast=True)` call, no lookup, no hand-chunking (pyairtable chunks at 10 internally; a failing chunk leaves earlier chunks applied and raises). pyairtable 2.3.x raises'
+assert old in s
+open(p,'w').write(s.replace(old,new))
+EOF
+[exit 0]
+
+$ sed -n 16p /Users/bharath/Desktop/AjackusAssignment/q-taskboard/CLAUDE.md | cut -c1-200
+- Airtable export (3c, design in docs/superpowers/plans/2026-09-11-airtable-export.md): the base's `Tasks` table has exactly eight fields — Title, Task ID, Project, Project ID, Status, Assignee, Descr
+[exit 0]
+
+$ cat /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/3c-airtable-export-test-plan.md
+# Part 3c — Airtable Export: Test-Case Plan (for review)
+
+Status: DRAFT for human review. No implementation or test code exists yet for the cases below. Decisions from the review round are folded in (batch_upsert, synchronous, no queue).
+
+## 1. Context and assumptions
+
+### Stack clarification
+- Backend is Django 5 + DRF. Real Airtable calls go through `pyairtable` (installed **2.3.7**, pinned `>=2.3,<3.0`). The brief's mention of the npm `airtable` package and `src/lib/airtable-mock.ts` comes from a stale PDF and does not apply.
+- The endpoint already exists as a stub: `POST /api/projects/<uuid:project_id>/export` → `ExportView` in `backend/projects/views.py`. It already enforces membership + `_can_edit_tasks(role)` and returns `{'exported': 0, ...}`.
+- Config comes from `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `AIRTABLE_TABLE_NAME` (default `Tasks`).
+- `backend/projects/airtable_mock.py` does not exist yet. Creating it is part of 3c (see "Test double").
+
+### Endpoint contract
+
+Request: `POST /api/projects/{project_id}/export`, empty body, Bearer token.
+
+Success (HTTP 200), also returned when some records failed:
+
+```json
+{
+  "exported": 12,
+  "created": 9,
+  "updated": 3,
+  "failed": [ { "taskId": "0f1c...", "reason": "422 INVALID_VALUE_FOR_COLUMN" } ],
+  "total": 13
+}
+```
+
+- Invariants: `exported == created + updated`; `total == exported + len(failed)`; `total` equals the number of tasks in the project.
+- HTTP 200 with a non-empty `failed` list = partial success.
+- Non-200 only for: `401` (unauthenticated), `403` (viewer/non-member), `503` (missing Airtable config), or `502` (an Airtable **auth** error such as 401/403 from the API, meaning no work could proceed).
+- Error shape: `{"error": "<message>"}`.
+
+### Idempotency and export algorithm (what the tests assume)
+
+Uses `pyairtable`'s server-side upsert; there is **no read-then-write lookup**, so two concurrent exports cannot both insert duplicates.
+
+1. Auth check (already in stub). Load all tasks for the project (`select_related('assignee','created_by')`).
+2. Build one record per task: `{"fields": {<mapping>}}`, including `Task ID = str(task.id)`.
+3. Chunk the records into groups of **10** at the service level (`BATCH_SIZE = 10`). We own chunking deliberately, so a failure is isolated to at most 10 records and call counts are deterministic; each `batch_upsert` call therefore receives ≤10 records (never exceeding what pyairtable would send per request anyway).
+4. For each chunk, call `table.batch_upsert(chunk, key_fields=["Task ID"], typecast=True)` wrapped in the retry loop. Accumulate `created += len(result["createdRecords"])`, `updated += len(result["updatedRecords"])`.
+5. Failure handling per chunk:
+   - **Transient** error → retried with backoff (see policy).
+   - **Per-record permanent** error (400/404/422) → fall back to upserting that chunk's records one at a time (`batch_upsert([record], ...)`), so only the genuinely bad record lands in `failed`; the rest of the chunk still exports.
+   - **Auth** error (401/403 from Airtable) → abort the whole export with `502`; this is a credentials/permission problem, not a per-record one.
+6. Return the aggregated counts.
+
+Verified `batch_upsert` signature (pyairtable 2.3.7):
+`batch_upsert(records, key_fields, replace=False, typecast=False, return_fields_by_field_id=False) -> UpsertResultDict` where the result carries `createdRecords`, `updatedRecords`, and `records`.
+
+### Field mapping (Task → Airtable `Tasks` row)
+
+The base's `Tasks` table has exactly these fields; any other name returns `422 UNKNOWN_FIELD_NAME`.
+
+| Airtable field | Source | Notes |
+|---|---|---|
+| `Task ID` | `str(task.id)` | Idempotency key (`key_fields`). |
+| `Title` | `task.title` | Primary field. |
+| `Description` | `task.description or ""` | |
+| `Status` | `task.status` | Raw code (`todo`/`in_progress`/`review`/`done`) with `typecast=True`. |
+| `Assignee` | `task.assignee.email` or `""` | Plain text. |
+| `Project` | `project.name` | |
+| `Project ID` | `str(project.id)` | Lets one base hold many projects. |
+| `Position` | `task.position` | Number. |
+
+### Injectable client (testability)
+- Export logic lives in `export_project_tasks(project, table=None, sleep=time.sleep)` in a new `backend/projects/airtable_export.py`. When `table is None` it builds a real client via a `get_table()` factory (`Api(key, retry_strategy=False).table(base, name)`), so our own retry loop owns retries and call counts stay exact.
+- The only method the service calls on the client is `batch_upsert(records, key_fields=..., typecast=...)`. Both `pyairtable.Table` and the double satisfy that.
+- HTTP tests patch the factory (`monkeypatch.setattr('projects.airtable_export.get_table', lambda: fake)`) so they never touch the network. `sleep` is injected as a recorder so backoff is asserted without real waiting.
+
+### Test double: `FakeAirtableTable` (built as part of 3c)
+- In-memory store keyed by `Task ID` → fields; generates `recXXXX` ids on create.
+- `batch_upsert(records, key_fields, typecast=False, **kw)`: matches on `key_fields`, updates matches and creates the rest, returns `{"createdRecords": [...], "updatedRecords": [...], "records": [...]}`. Records every call in `self.calls`. It mirrors `pyairtable` and does **not** raise on batch size (the service already sends ≤10).
+- Scriptable failures: `fail_next(n, exc)` raises `exc` on the next `n` calls; `fail_for_task_id(task_id, exc)` raises whenever a call's records include that Task ID (per-record failure tests).
+- Errors are raised as `requests.HTTPError` with `exc.response.status_code` set, matching what pyairtable 2.3.x surfaces, so the classification code sees the real type.
+
+### Retry / error classification under test
+- **Transient (retry, bounded):** HTTP 429, 500, 502, 503, 504, plus `requests.ConnectionError` / `requests.Timeout`. Exponential backoff honouring `Retry-After` on 429; `MAX_ATTEMPTS` total attempts (tests read the constant).
+- **Per-record permanent (no retry, → `failed`):** HTTP 400, 404, 422.
+- **Auth (no retry, → 502 abort):** HTTP 401, 403.
+
+---
+
+## 2. Test cases
+
+Test style follows `backend/projects/test_comments.py`: pytest + `APIClient`, Bearer token from `POST /api/auth/login`, helper `member_client(project, email, role)`. Files: `backend/projects/test_export.py` (HTTP + service) and `backend/projects/test_airtable_mock.py` (double sanity checks). Every HTTP test patches the table factory with a `FakeAirtableTable`.
+
+### A. Authorization (2 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| A1 | `test_export_role_gate` (parametrized) | Server-side auth, not just UI. | Parametrize role→status: `admin→200, member→200, viewer→403, non_member→403`. On every 403 assert `fake.calls == []` (no Airtable call). |
+| A2 | `test_unauthenticated_gets_401` | Missing token rejected. | POST with no credentials; assert 401 and no Airtable call. |
+
+### B. Core export (8 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| B1 | `test_exports_all_tasks_in_project` | Every task is pushed. | 3 tasks; POST; assert `created == 3`, store has 3 rows, set of `Task ID`s equals the task ids. |
+| B2 | `test_field_mapping` | Row fields match the mapping. | One fully-populated task; assert the stored record's fields exactly (`Task ID`, `Title`, `Status`, `Assignee` email, `Project ID`, `Position`, ...). |
+| B3 | `test_unassigned_task_maps_assignee_empty` | Null assignee does not crash. | Task with `assignee=None`; assert `Assignee == ""` and export succeeds. |
+| B4 | `test_response_counts_and_invariants` | Counts consistent. | 4 tasks; assert `created == 4`, `updated == 0`, `failed == []`, `exported == created + updated`, `total == exported + len(failed) == 4`. |
+| B5 | `test_empty_project_exports_zero` | No tasks is a graceful no-op. | 0 tasks; assert 200, `exported == 0`, and **no** `batch_upsert` call. |
+| B6 | `test_only_this_projects_tasks_exported` | Scope is one project (replaces the old formula-string assertion with observable behavior). | Two projects, 2 tasks each, plus a preloaded fake row for a project-B task; export A; assert only A's Task IDs were upserted, every upserted row's `Project ID == A.id`, and B's preloaded row is unchanged. |
+| B7 | `test_large_export_batches_not_per_task` | Batches, no per-task calls. | 1000 tasks; assert `batch_upsert` was called exactly 100 times (chunks of 10), each call ≤10 records, `exported == 1000`. |
+| B8 | `test_missing_airtable_config_returns_503` | Unconfigured fails clearly, before any work. | Unset `AIRTABLE_API_KEY`; POST; assert 503 `{"error": "airtable not configured"}` and no `batch_upsert` call. |
+
+### C. Idempotency (6 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| C1 | `test_second_run_does_not_duplicate` | Re-run upserts, not inserts. | POST twice with 3 tasks (fake retains state); assert store still has 3 rows, each Task ID once. |
+| C2 | `test_second_run_reports_updated_not_created` | Created vs updated split. | Run 1: `created == 3, updated == 0`. Run 2: `created == 0, updated == 3`, `exported == 3`. |
+| C3 | `test_changed_task_updates_same_row` | Edits propagate to the same row. | Export; change a task's title+status; export; assert that Task ID's row has the new values, the same `rec` id, and `updated >= 1`. |
+| C4 | `test_mixed_create_and_update` | New + existing in one run. | Export 2 tasks; add a 3rd; export; assert `created == 1, updated == 2`, store has 3 rows. |
+| C5 | `test_failed_record_recovers_on_next_run` | Failures are not permanently stuck. | Run 1 with `fail_for_task_id(t3, 422)` → `t3` in `failed`, 2 rows stored. Clear the failure; run 2; assert `t3` is now created and `failed == []`. |
+| C6 | `test_reexport_after_local_delete` | Deleted-locally task does not break re-export; orphan row left in place. | Export 3 tasks; delete one task locally; export; assert 200, only the 2 remaining Task IDs upserted, and the deleted task's row is **still present** in the store (orphan cleanup is out of scope) with no error. |
+
+### D. Partial failure resilience (4 cases)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| D1 | `test_single_permanent_failure_does_not_abort` | One bad record, others succeed. | 5 tasks; `fail_for_task_id(t3, 422)`; assert 200, `exported == 4`, `failed == [{taskId: t3, reason ~ "422"}]`, store has 4 rows, `total == exported + len(failed) == 5`. |
+| D2 | `test_failed_chunk_falls_back_to_single_records` | Blast radius bounded to the bad record. | 10 tasks in one chunk, one poisoned (422); assert the chunk `batch_upsert` fails, then 10 single-record `batch_upsert` calls follow; 9 succeed, 1 in `failed`. |
+| D3 | `test_all_records_fail_still_returns_200` | Total failure reported, not a 500. | All tasks poisoned with 422; assert 200, `exported == 0`, `len(failed) == n`, each has a non-empty `reason`, `total == n`. |
+| D4 | `test_airtable_auth_error_returns_502` | Bad credentials abort, not partial. | First `batch_upsert` raises `401`; assert 502 `{"error": ...}`, no records stored, no per-record `failed` report. |
+
+### E. Retry behaviour (6 cases; service-level, `sleep` injected as a recorder)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| E1 | `test_transient_is_retried_then_succeeds` (parametrized) | Transient errors retry. | Parametrize over `429, 500, 502, 503, 504, requests.Timeout, requests.ConnectionError`: `fail_next(1, exc)`; assert `batch_upsert` called twice, `exported == n`, `failed == []`, `sleep` called once. |
+| E2 | `test_permanent_is_not_retried_and_reported` (parametrized) | Validation errors do not retry. | Parametrize over `400, 404, 422`: `fail_for_task_id(t, exc)`; assert exactly one call for that record, `sleep` never called, `t` in `failed`. |
+| E3 | `test_retries_are_bounded` | Never loops forever. | `fail_next(99, 503)`; assert exactly `MAX_ATTEMPTS` attempts, then the record in `failed` with reason mentioning 503; `sleep` called `MAX_ATTEMPTS - 1` times. |
+| E4 | `test_backoff_delays_grow` | Backoff is exponential. | `fail_next(2, 503)`; assert recorded sleeps equal the module's computed backoff sequence (read from constants, not hard-coded). |
+| E5 | `test_429_honours_retry_after` | Uses the server's hint. | 429 with `Retry-After: 3`; assert `sleep` called with `3`. |
+| E6 | `test_429_without_retry_after_uses_backoff` | Falls back when no hint. | 429 with no `Retry-After` header; assert `sleep` called with the computed backoff delay (not 0). |
+
+### F. Frontend trigger (4 cases; Vitest + Testing Library)
+
+| # | Test name | Intent | Exercise / assert |
+|---|---|---|---|
+| F1 | `Export button role gate` (parametrized) | Members see it, viewers don't. | Render with current-user role `admin`/`member` → button "Export to Airtable" present; role `viewer` → `queryByRole('button', {name: /export/i})` is null. |
+| F2 | `clicking Export calls the endpoint and shows result` | Wiring. | Mock `POST /api/projects/{id}/export` → `{exported: 3, created: 3, updated: 0, failed: []}`; click; assert the call and that "Exported 3 tasks" appears. |
+| F3 | `Export shows partial-failure message` | Surfaces failures. | Mock response with `failed: [{...}]`; assert a "1 task failed" message and the button re-enables. |
+| F4 | `Export surfaces a 503 when unconfigured` | Server says unavailable. | Mock 503 `{"error": "airtable not configured"}`; assert the error is shown (button stays visible, per Q9). |
+
+Note: the button derives from the same `myRole` check already in `ProjectPage.tsx` (a `canExport = admin|member`, mirroring `canComment`) to avoid drift.
+
+---
+
+## 3. Real-integration verification (manual, not automated)
+
+One-off check after implementation, run by a human:
+
+1. Ensure `.env` has real `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `AIRTABLE_TABLE_NAME=Tasks` and the base's `Tasks` table has the mapped fields.
+2. Log in as an admin, create a project with 3–5 tasks (one unassigned), call the endpoint once.
+3. Confirm the response counts (`created == n`).
+4. Read the rows back (Airtable MCP `list_records_for_table` or the Airtable UI); confirm one row per task with matching `Task ID` and `Title`.
+5. Edit one task, export again; confirm `updated == n, created == 0` and the base row count is unchanged (idempotency).
+6. Record the outcome in `TERMINAL_LOG.md`, never the API key.
+
+Why manual, not CI: the real API is rate-limited (5 req/s per base), needs a secret that must not reach CI logs, writes persist in a shared base, and network latency makes results non-deterministic. All logic paths are covered deterministically by the fake; the manual run only proves credentials, field names, and `pyairtable` wiring.
+
+---
+
+## 4. Decisions (confirmed in review)
+
+- **Q1 Response shape:** `{exported, created, updated, failed:[{taskId, reason}], total}`; the stub's `tasks` list is dropped (too large at 1000 tasks).
+- **Q2 Store Airtable record id on Task:** No. `batch_upsert` keyed on `Task ID` needs no stored id and no lookup.
+- **Q3 Sync vs async:** Synchronous, no queue/Celery/threads (user-confirmed). ~1000 tasks in one request.
+- **Q4 Status field:** Send raw codes with `typecast=True`.
+- **Q5 Who retries:** Own bounded loop; `Api(..., retry_strategy=False)` disables pyairtable's.
+- **Q6 Update all vs changed:** Update every existing row each run (deterministic; no `Updated At` optimisation).
+- **Q7 Partial-failure status:** 200 with a `failed` list.
+- **Q8 Deleted-task orphans:** Out of scope; a re-export after a local delete succeeds and leaves the stale row in place (C6).
+- **Q9 Missing config:** 503 `airtable not configured`; the frontend surfaces it rather than hiding the button.
+
+Remaining to confirm at implementation time: the base's `Status` single-select choices must equal the four raw codes (or `typecast=True` must be allowed to create them); pin B2's expected `Status` value accordingly.
+[exit 0]
+
+# subagent: impl-export-tests — write red 3c export tests + FakeAirtableTable double
+# subagent: export-design-fix — convert export design to batch_upsert
+$ docker compose exec -T backend python -m pytest projects/test_airtable_mock.py -v
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-8.4.2, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+django: version: 5.2.17, settings: taskboard.settings (from ini)
+rootdir: /app
+configfile: pytest.ini
+plugins: django-4.14.0
+collecting ... collected 5 items
+
+projects/test_airtable_mock.py::test_upsert_creates_then_updates_same_key PASSED [ 20%]
+projects/test_airtable_mock.py::test_fail_next_raises_then_recovers PASSED [ 40%]
+projects/test_airtable_mock.py::test_fail_for_task_id_targets_the_right_record PASSED [ 60%]
+projects/test_airtable_mock.py::test_http_error_carries_status_and_headers PASSED [ 80%]
+projects/test_airtable_mock.py::test_clear_failures_recovers_targeted_record PASSED [100%]
+
+============================== 5 passed in 0.09s ===============================
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest projects/test_export.py -v --no-header 2>&1 | tail -70
+        make_task(project, owner)
+        fake = FakeAirtableTable()
+        fake.fail_next(1, http_error(429))
+        sleeps = []
+    
+>       export_project_tasks(project, table=fake, sleep=sleeps.append)
+
+projects/test_export.py:500: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+project = <Project: Project object (22cae0da-87de-4f18-be5c-c05a26c1e36a)>
+table = <projects.airtable_mock.FakeAirtableTable object at 0xffff8689d3a0>
+sleep = <built-in method append of list object at 0xffff86733b40>
+
+    def export_project_tasks(project, table=None, sleep=None):
+        """Export all of ``project``'s tasks to Airtable via ``batch_upsert``.
+    
+        Not implemented yet. When ``table`` is None a real client is built via
+        ``get_table``; ``sleep`` defaults to ``time.sleep`` and is injectable so
+        backoff can be asserted without real waiting.
+        """
+>       raise NotImplementedError("export_project_tasks is not implemented yet")
+E       NotImplementedError: export_project_tasks is not implemented yet
+
+projects/airtable_export.py:61: NotImplementedError
+--------------------------- Captured stderr teardown ---------------------------
+Destroying test database for alias 'default'...
+=============================== warnings summary ===============================
+projects/test_export.py: 22 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:147: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+projects/test_export.py: 22 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:368: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    decoded = self.decode_complete(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED projects/test_export.py::TestCoreExport::test_exports_all_tasks_in_project
+FAILED projects/test_export.py::TestCoreExport::test_field_mapping - KeyError...
+FAILED projects/test_export.py::TestCoreExport::test_unassigned_task_maps_assignee_empty
+FAILED projects/test_export.py::TestCoreExport::test_response_counts_and_invariants
+FAILED projects/test_export.py::TestCoreExport::test_only_this_projects_tasks_exported
+FAILED projects/test_export.py::TestCoreExport::test_large_export_batches_not_per_task
+FAILED projects/test_export.py::TestCoreExport::test_missing_airtable_config_returns_503
+FAILED projects/test_export.py::TestIdempotency::test_second_run_does_not_duplicate
+FAILED projects/test_export.py::TestIdempotency::test_second_run_reports_updated_not_created
+FAILED projects/test_export.py::TestIdempotency::test_changed_task_updates_same_row
+FAILED projects/test_export.py::TestIdempotency::test_mixed_create_and_update
+FAILED projects/test_export.py::TestIdempotency::test_failed_record_recovers_on_next_run
+FAILED projects/test_export.py::TestIdempotency::test_reexport_after_local_delete
+FAILED projects/test_export.py::TestPartialFailure::test_single_permanent_failure_does_not_abort
+FAILED projects/test_export.py::TestPartialFailure::test_failed_chunk_falls_back_to_single_records
+FAILED projects/test_export.py::TestPartialFailure::test_all_records_fail_still_returns_200
+FAILED projects/test_export.py::TestPartialFailure::test_airtable_auth_error_returns_502
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc0]
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc1]
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc2]
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc3]
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc4]
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc5]
+FAILED projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc6]
+FAILED projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[400]
+FAILED projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[404]
+FAILED projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[422]
+FAILED projects/test_export.py::TestRetry::test_retries_are_bounded - NotImpl...
+FAILED projects/test_export.py::TestRetry::test_backoff_delays_grow - NotImpl...
+FAILED projects/test_export.py::TestRetry::test_429_honours_retry_after - Not...
+FAILED projects/test_export.py::TestRetry::test_429_without_retry_after_uses_backoff
+================== 31 failed, 6 passed, 44 warnings in 15.95s ==================
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest projects/test_export.py -v --no-header 2>&1 | grep -E 'PASSED'
+projects/test_export.py::TestAuthorization::test_export_role_gate[admin-200] PASSED [  2%]
+projects/test_export.py::TestAuthorization::test_export_role_gate[member-200] PASSED [  5%]
+projects/test_export.py::TestAuthorization::test_export_role_gate[viewer-403] PASSED [  8%]
+projects/test_export.py::TestAuthorization::test_export_role_gate[non_member-403] PASSED [ 10%]
+projects/test_export.py::TestAuthorization::test_unauthenticated_gets_401 PASSED [ 13%]
+projects/test_export.py::TestCoreExport::test_empty_project_exports_zero PASSED [ 27%]
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest projects/test_export.py -rA --no-header -q 2>&1 | grep -E 'assert|KeyError|NotImpl|Error' | sort | uniq -c | sort -rn | head -40
+  14 projects/airtable_export.py:61: NotImplementedError
+  14 E       NotImplementedError: export_project_tasks is not implemented yet
+  14 >       raise NotImplementedError("export_project_tasks is not implemented yet")
+  14         backoff can be asserted without real waiting.
+  10         assert resp.status_code == 200
+   7         requests.ConnectionError("conn reset"),
+   4 E       KeyError: 'created'
+   2 E       KeyError: 'failed'
+   1 projects/test_export.py:413: AssertionError
+   1 projects/test_export.py:403: KeyError
+   1 projects/test_export.py:390: AssertionError
+   1 projects/test_export.py:372: AssertionError
+   1 projects/test_export.py:354: AssertionError
+   1 projects/test_export.py:332: KeyError
+   1 projects/test_export.py:319: KeyError
+   1 projects/test_export.py:298: KeyError
+   1 projects/test_export.py:285: KeyError
+   1 projects/test_export.py:277: AssertionError
+   1 projects/test_export.py:261: AssertionError
+   1 projects/test_export.py:250: AssertionError
+   1 projects/test_export.py:236: AssertionError
+   1 projects/test_export.py:202: KeyError
+   1 projects/test_export.py:192: KeyError
+   1 projects/test_export.py:174: KeyError
+   1 projects/test_export.py:155: KeyError
+   1 owner = <User: owner@taskboard.dev>, exc = HTTPError('HTTP 504')
+   1 owner = <User: owner@taskboard.dev>, exc = HTTPError('HTTP 503')
+   1 owner = <User: owner@taskboard.dev>, exc = HTTPError('HTTP 502')
+   1 owner = <User: owner@taskboard.dev>, exc = HTTPError('HTTP 500')
+   1 owner = <User: owner@taskboard.dev>, exc = HTTPError('HTTP 429')
+   1 owner = <User: owner@taskboard.dev>, exc = ConnectionError('conn reset')
+   1 FAILED projects/test_export.py::TestRetry::test_retries_are_bounded - NotImpl...
+   1 FAILED projects/test_export.py::TestRetry::test_backoff_delays_grow - NotImpl...
+   1 FAILED projects/test_export.py::TestCoreExport::test_field_mapping - KeyError...
+   1 E       assert 200 == 503
+   1 E       assert 200 == 502
+   1 E       assert 0 == 4
+   1 E       assert 0 == 3
+   1 E       assert 0 == 1000
+   1 E       assert 0 == 10
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest -q 2>&1 | tail -8
+$ sed -n '1027p;1028p;1029p;1227p;1228p;1229p' docs/superpowers/plans/2026-09-11-airtable-export.md | cat -A | cut -c1-40
+cat: illegal option -- A
+usage: cat [-belnstuv] [file ...]
+[exit 0]
+
+$ cp docs/superpowers/plans/2026-09-11-airtable-export.md /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/design.orig.md
+[exit 0]
+
+$ sed -n '1028,1228p' docs/superpowers/plans/2026-09-11-airtable-export.md > /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/mid.md && head -3 /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/mid.md && tail -3 /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/mid.md
+
+### Task 7: "Export to Airtable" button on the project page
+
+
+---
+
+[exit 0]
+
+$ cat /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/head.md /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/mid.md /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tail.md > docs/superpowers/plans/2026-09-11-airtable-export.md && wc -l docs/superpowers/plans/2026-09-11-airtable-export.md
+    1345 docs/superpowers/plans/2026-09-11-airtable-export.md
+[exit 0]
+
+$ grep -n '^### Task\|^## Self-review\|^---$' docs/superpowers/plans/2026-09-11-airtable-export.md | tail -12
+704:### Task 3: Idempotency via `batch_upsert` — re-run, update, mixed, stale-row guards
+773:---
+775:### Task 4: Error classification, bounded retry with backoff, auth abort
+883:---
+885:### Task 5: Partial-failure resilience — single-record fallback for a permanently failed chunk
+991:---
+993:### Task 6: Wire `ExportView` — response shape, 503/502 mapping, HTTP tests
+1132:### Task 7: "Export to Airtable" button on the project page
+1297:---
+1299:### Task 8: Manual real-integration verification and docs
+1330:---
+1332:## Self-review
+[exit 0]
+
+$ grep -n 'shows partial-failure count\|Expected: FAIL — no button\|per-record fallback, the 503 case' docs/superpowers/plans/2026-09-11-airtable-export.md
+1207:  it("shows partial-failure count and re-enables the button", async () => {
+1222:Expected: FAIL — no button named "Export to Airtable"; no element with test id `export-result`.
+1326:Add to `README.md` under "Airtable Export (Part 3c)": the response shape, the idempotency rule (server-side upsert on `Task ID`), the retry policy (3 attempts, 0.5 s / 1 s, honours `Retry-After`), the per-record fallback, the 503 case, the "deleted locally leaves the row" rule, and the sentence on why the real run is manual. Append the verification outcome to `TERMINAL_LOG.md`.
+[exit 0]
+
+FAILED projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[400]
+FAILED projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[404]
+FAILED projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[422]
+FAILED projects/test_export.py::TestRetry::test_retries_are_bounded - NotImpl...
+FAILED projects/test_export.py::TestRetry::test_backoff_delays_grow - NotImpl...
+FAILED projects/test_export.py::TestRetry::test_429_honours_retry_after - Not...
+FAILED projects/test_export.py::TestRetry::test_429_without_retry_after_uses_backoff
+31 failed, 46 passed, 94 warnings in 32.21s
+[exit 0]
+
+$ docker compose exec -T frontend npm test -- --run 2>&1 | tail -45
+$ grep -n 'batch_create\|batch_update\|all(formula\|502.*lookup\|AirtableLookupFailed' docs/superpowers/plans/2026-09-11-airtable-export.md
+37:| D5 | Partial-failure status | HTTP 200 with a non-empty `failed` list. Non-200 only for 401/403 (caller), 404 (project missing), 503 (not configured), and 502 (Airtable answered 401/403: bad credentials or no base access, so no work can proceed). There is no lookup step, so there is no "lookup failed" case. | 207 Multi-Status. | Locked |
+[exit 0]
+
+$ grep -c 'batch_upsert' docs/superpowers/plans/2026-09-11-airtable-export.md
+41
+[exit 0]
+
+$ grep -n 'PROVISIONAL\|fail_on_request\|fake.requests\|internal request\|hand-chunk\|client=fake\|client=None\|test_network_timeout\|test_single_upsert_call\|test_large_export_is_one_call\|MAX_RECORDS_PER_REQUEST' docs/superpowers/plans/2026-09-11-airtable-export.md
+[exit 1]
+
+$ grep -c 'test_transient_is_retried_then_succeeds\|test_failed_chunk_falls_back_to_single_records\|test_airtable_auth_error_returns_502\|test_large_export_batches_not_per_task\|test_reexport_after_local_delete\|test_failed_record_recovers_on_next_run\|test_export_role_gate\|test_missing_airtable_config_returns_503' docs/superpowers/plans/2026-09-11-airtable-export.md
+15
+[exit 0]
+
+$ python3 /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/fix_claude_md.py
+CLAUDE.md gotcha line updated
+[exit 0]
+
+$ grep -n 'BATCH_SIZE' CLAUDE.md | cut -c1-120
+16:- Airtable export (3c, design in docs/superpowers/plans/2026-09-11-airtable-export.md): the base's `Tasks` table has 
+[exit 0]
+
+          [36m<h2[39m
+            [33mclass[39m=[32m"text-sm font-medium mb-3"[39m
+          [36m>[39m
+            [0mmembers[0m
+          [36m</h2>[39m
+          [36m<ul[39m
+            [33mclass[39m=[32m"bg-surface border border-border rounded-lg divide-y divide-border"[39m
+          [36m>[39m
+            [36m<li[39m
+              [33mclass[39m=[32m"px-4 py-3 flex items-center justify-between text-sm"[39m
+            [36m>[39m
+              [36m<span>[39m
+                [0mMe[0m
+              [36m</span>[39m
+              [36m<span[39m
+                [33mclass[39m=[32m"text-xs text-muted"[39m
+              [36m>[39m
+                [0mme@taskboard.dev[0m
+                [0m · [0m
+                [0madmin[0m
+              [36m</span>[39m
+            [36m</li>[39m
+          [36m</ul>[39m
+        [36m</section>[39m
+      [36m</main>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ waitForWrapper node_modules/@testing-library/dom/dist/wait-for.js:163:27
+ ❯ node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+ ❯ src/tests/ExportButton.test.tsx:171:30
+    169|     await screen.findByText("Export Project");
+    170| 
+    171|     const btn = await screen.findByRole("button", { name: /export to a…
+       |                              ^
+    172|     fireEvent.click(btn);
+    173| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  5 failed | 10 passed (15)
+   Start at  13:16:15
+   Duration  5.53s (transform 767ms, setup 436ms, collect 1.10s, tests 3.41s, environment 2.04s, prepare 749ms)
+
+[exit 0]
+
+$ docker compose exec -T frontend npm test -- --run 2>&1 | grep -E '✓|×|✗|❯ src|passed|failed' | grep -vE 'waitFor|query-helpers' | head -40
+$ grep -n 'batch_create\|batch_update\|all(formula\|502.*lookup\|AirtableLookupFailed' docs/superpowers/plans/2026-09-11-airtable-export.md; echo matches=$?
+matches=1
+[exit 0]
+
+$ grep -c 'batch_upsert' docs/superpowers/plans/2026-09-11-airtable-export.md
+41
+[exit 0]
+
+$ grep -c 'AirtableAuthError' docs/superpowers/plans/2026-09-11-airtable-export.md
+21
+[exit 0]
+
+ ✓ src/tests/schemas.test.ts (6 tests) 3ms
+ ✓ src/tests/TaskCard.test.tsx (3 tests) 85ms
+ ❯ src/tests/ExportButton.test.tsx (6 tests | 5 failed) 3281ms
+   × Export to Airtable button > role admin sees the export button: true 108ms
+   × Export to Airtable button > role member sees the export button: true 26ms
+   × Export to Airtable button > clicking Export calls the endpoint and shows the result 1020ms
+   × Export to Airtable button > shows a partial-failure message and re-enables the button 1042ms
+   × Export to Airtable button > surfaces a 503 when Airtable is unconfigured 1062ms
+ ❯ src/tests/ExportButton.test.tsx:94:30
+ ❯ src/tests/ExportButton.test.tsx:114:30
+ ❯ src/tests/ExportButton.test.tsx:146:30
+ ❯ src/tests/ExportButton.test.tsx:171:30
+ Test Files  1 failed | 2 passed (3)
+      Tests  5 failed | 10 passed (15)
+[exit 0]
+
+# subagent: verify-3c — verify red tests vs reconciled design
+# subagent: impl-export-backend — implement airtable export service + ExportView
+# subagent: impl-export-frontend — implement Export to Airtable button
+$ grep -n -A40 '^## F' docs/3c-airtable-export-test-plan.md | head -80
+[exit 0]
+
+$ grep -n 'Export\|export' frontend/src/types.ts | head
+ugrep: warning: frontend/src/types.ts: No such file or directory
+[exit 0]
+
+$ grep -n -i -B2 -A30 'F1\|^#.*F\|frontend' docs/3c-airtable-export-test-plan.md | head -120
+69-- HTTP tests patch the factory (`monkeypatch.setattr('projects.airtable_export.get_table', lambda: fake)`) so they never touch the network. `sleep` is injected as a recorder so backoff is asserted without real waiting.
+70-
+71:### Test double: `FakeAirtableTable` (built as part of 3c)
+72-- In-memory store keyed by `Task ID` → fields; generates `recXXXX` ids on create.
+73-- `batch_upsert(records, key_fields, typecast=False, **kw)`: matches on `key_fields`, updates matches and creates the rest, returns `{"createdRecords": [...], "updatedRecords": [...], "records": [...]}`. Records every call in `self.calls`. It mirrors `pyairtable` and does **not** raise on batch size (the service already sends ≤10).
+74-- Scriptable failures: `fail_next(n, exc)` raises `exc` on the next `n` calls; `fail_for_task_id(task_id, exc)` raises whenever a call's records include that Task ID (per-record failure tests).
+75-- Errors are raised as `requests.HTTPError` with `exc.response.status_code` set, matching what pyairtable 2.3.x surfaces, so the classification code sees the real type.
+76-
+77-### Retry / error classification under test
+78-- **Transient (retry, bounded):** HTTP 429, 500, 502, 503, 504, plus `requests.ConnectionError` / `requests.Timeout`. Exponential backoff honouring `Retry-After` on 429; `MAX_ATTEMPTS` total attempts (tests read the constant).
+79-- **Per-record permanent (no retry, → `failed`):** HTTP 400, 404, 422.
+80-- **Auth (no retry, → 502 abort):** HTTP 401, 403.
+81-
+82----
+83-
+84-## 2. Test cases
+85-
+86-Test style follows `backend/projects/test_comments.py`: pytest + `APIClient`, Bearer token from `POST /api/auth/login`, helper `member_client(project, email, role)`. Files: `backend/projects/test_export.py` (HTTP + service) and `backend/projects/test_airtable_mock.py` (double sanity checks). Every HTTP test patches the table factory with a `FakeAirtableTable`.
+87-
+88-### A. Authorization (2 cases)
+89-
+90-| # | Test name | Intent | Exercise / assert |
+91-|---|---|---|---|
+92-| A1 | `test_export_role_gate` (parametrized) | Server-side auth, not just UI. | Parametrize role→status: `admin→200, member→200, viewer→403, non_member→403`. On every 403 assert `fake.calls == []` (no Airtable call). |
+93-| A2 | `test_unauthenticated_gets_401` | Missing token rejected. | POST with no credentials; assert 401 and no Airtable call. |
+94-
+95-### B. Core export (8 cases)
+96-
+97-| # | Test name | Intent | Exercise / assert |
+98-|---|---|---|---|
+99-| B1 | `test_exports_all_tasks_in_project` | Every task is pushed. | 3 tasks; POST; assert `created == 3`, store has 3 rows, set of `Task ID`s equals the task ids. |
+100-| B2 | `test_field_mapping` | Row fields match the mapping. | One fully-populated task; assert the stored record's fields exactly (`Task ID`, `Title`, `Status`, `Assignee` email, `Project ID`, `Position`, ...). |
+101-| B3 | `test_unassigned_task_maps_assignee_empty` | Null assignee does not crash. | Task with `assignee=None`; assert `Assignee == ""` and export succeeds. |
+--
+137-| E6 | `test_429_without_retry_after_uses_backoff` | Falls back when no hint. | 429 with no `Retry-After` header; assert `sleep` called with the computed backoff delay (not 0). |
+138-
+139:### F. Frontend trigger (4 cases; Vitest + Testing Library)
+140-
+141-| # | Test name | Intent | Exercise / assert |
+142-|---|---|---|---|
+143:| F1 | `Export button role gate` (parametrized) | Members see it, viewers don't. | Render with current-user role `admin`/`member` → button "Export to Airtable" present; role `viewer` → `queryByRole('button', {name: /export/i})` is null. |
+144-| F2 | `clicking Export calls the endpoint and shows result` | Wiring. | Mock `POST /api/projects/{id}/export` → `{exported: 3, created: 3, updated: 0, failed: []}`; click; assert the call and that "Exported 3 tasks" appears. |
+145-| F3 | `Export shows partial-failure message` | Surfaces failures. | Mock response with `failed: [{...}]`; assert a "1 task failed" message and the button re-enables. |
+146-| F4 | `Export surfaces a 503 when unconfigured` | Server says unavailable. | Mock 503 `{"error": "airtable not configured"}`; assert the error is shown (button stays visible, per Q9). |
+147-
+148-Note: the button derives from the same `myRole` check already in `ProjectPage.tsx` (a `canExport = admin|member`, mirroring `canComment`) to avoid drift.
+149-
+150----
+151-
+152-## 3. Real-integration verification (manual, not automated)
+153-
+154-One-off check after implementation, run by a human:
+155-
+156-1. Ensure `.env` has real `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `AIRTABLE_TABLE_NAME=Tasks` and the base's `Tasks` table has the mapped fields.
+157-2. Log in as an admin, create a project with 3–5 tasks (one unassigned), call the endpoint once.
+158-3. Confirm the response counts (`created == n`).
+159-4. Read the rows back (Airtable MCP `list_records_for_table` or the Airtable UI); confirm one row per task with matching `Task ID` and `Title`.
+160-5. Edit one task, export again; confirm `updated == n, created == 0` and the base row count is unchanged (idempotency).
+161-6. Record the outcome in `TERMINAL_LOG.md`, never the API key.
+162-
+163-Why manual, not CI: the real API is rate-limited (5 req/s per base), needs a secret that must not reach CI logs, writes persist in a shared base, and network latency makes results non-deterministic. All logic paths are covered deterministically by the fake; the manual run only proves credentials, field names, and `pyairtable` wiring.
+164-
+165----
+166-
+167-## 4. Decisions (confirmed in review)
+168-
+169-- **Q1 Response shape:** `{exported, created, updated, failed:[{taskId, reason}], total}`; the stub's `tasks` list is dropped (too large at 1000 tasks).
+170-- **Q2 Store Airtable record id on Task:** No. `batch_upsert` keyed on `Task ID` needs no stored id and no lookup.
+171-- **Q3 Sync vs async:** Synchronous, no queue/Celery/threads (user-confirmed). ~1000 tasks in one request.
+172-- **Q4 Status field:** Send raw codes with `typecast=True`.
+173-- **Q5 Who retries:** Own bounded loop; `Api(..., retry_strategy=False)` disables pyairtable's.
+--
+175-- **Q7 Partial-failure status:** 200 with a `failed` list.
+176-- **Q8 Deleted-task orphans:** Out of scope; a re-export after a local delete succeeds and leaves the stale row in place (C6).
+177:- **Q9 Missing config:** 503 `airtable not configured`; the frontend surfaces it rather than hiding the button.
+178-
+179-Remaining to confirm at implementation time: the base's `Status` single-select choices must equal the four raw codes (or `typecast=True` must be allowed to create them); pin B2's expected `Status` value accordingly.
+[exit 0]
+
+$ ls frontend/src frontend/src/types* 2>&1; grep -rn 'Export' frontend/src/types* | head
+frontend/src:
+App.tsx
+components
+globals.css
+lib
+main.tsx
+pages
+tests
+types
+
+frontend/src/types:
+index.ts
+[exit 0]
+
+$ tail -20 frontend/src/types/index.ts
+export type ApiProjectDetail = {
+  id: string;
+  name: string;
+  description: string | null;
+  ownerId: string;
+  owner: ApiUser;
+  memberships: ApiProjectMember[];
+  tasks: ApiTask[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const STATUS_LABELS: Record<TaskStatus, string> = {
+  todo: "To do",
+  in_progress: "In progress",
+  review: "In review",
+  done: "Done",
+};
+
+export const STATUS_ORDER: TaskStatus[] = ["todo", "in_progress", "review", "done"];
+[exit 0]
+
+$ grep -c 'canExport' frontend/src/pages/ProjectPage.tsx
+2
+[exit 0]
+
+$ docker compose exec -T frontend npm test -- --run 2>&1 | tail -40
+
+> taskboard-frontend@1.0.0 test
+> vitest run --run
+
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+ RUN  v2.1.9 /app
+
+(node:1268) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///app/postcss.config.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /app/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+ ✓ src/tests/schemas.test.ts (6 tests) 4ms
+ ✓ src/tests/TaskCard.test.tsx (3 tests) 92ms
+stderr | src/tests/ExportButton.test.tsx > Export to Airtable button > role admin sees the export button: true
+⚠️ React Router Future Flag Warning: React Router will begin wrapping state updates in `React.startTransition` in v7. You can use the `v7_startTransition` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_starttransition.
+⚠️ React Router Future Flag Warning: Relative route resolution within Splat routes is changing in v7. You can use the `v7_relativeSplatPath` future flag to opt-in early. For more information, see https://reactrouter.com/v6/upgrading/future#v7_relativesplatpath.
+
+ ✓ src/tests/ExportButton.test.tsx (6 tests) 237ms
+
+ Test Files  3 passed (3)
+      Tests  15 passed (15)
+   Start at  13:19:40
+   Duration  1.42s (transform 361ms, setup 232ms, collect 602ms, tests 333ms, environment 1.16s, prepare 494ms)
+
+[exit 0]
+
+$ docker compose exec -T frontend npx tsc --noEmit 2>&1 | grep '^src/' | head; echo src-errors-done
+src-errors-done
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest projects/test_export.py -q 2>&1 | tail -40
+.....................................                                    [100%]
+=============================== warnings summary ===============================
+projects/test_export.py: 22 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:147: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+projects/test_export.py: 22 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:368: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    decoded = self.decode_complete(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+37 passed, 44 warnings in 13.87s
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest -q 2>&1 | tail -15
+$ grep -n 'class ExportView' -A 40 /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/views.py
+235:class ExportView(APIView):
+236-    def post(self, request, project_id):
+237-        membership = _get_membership(request.user, project_id)
+238-        if not membership:
+239-            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+240-        if not _can_edit_tasks(membership.role):
+241-            return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
+242-
+243-        try:
+244-            result = export_project_tasks(membership.project)
+245-        except AirtableNotConfigured:
+246-            return Response({'error': 'airtable not configured'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+247-        except AirtableAuthError:
+248-            return Response({'error': 'airtable authentication failed'}, status=status.HTTP_502_BAD_GATEWAY)
+249-        return Response(result)
+250-
+251-
+252-class CommentListCreateView(APIView):
+253-    def _task_or_none(self, task_id):
+254-        try:
+255-            return Task.objects.get(id=task_id)
+256-        except Task.DoesNotExist:
+257-            return None
+258-
+259-    def get(self, request, task_id):
+260-        task = self._task_or_none(task_id)
+261-        if task is None:
+262-            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+263-        membership = _get_membership(request.user, task.project_id)
+264-        if not membership:
+265-            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+266-        comments = task.comments.select_related('author').order_by('created_at')
+267-        return Response({'comments': CommentSerializer(comments, many=True).data})
+268-
+269-    def post(self, request, task_id):
+270-        task = self._task_or_none(task_id)
+271-        if task is None:
+272-            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+273-        membership = _get_membership(request.user, task.project_id)
+274-        if not membership:
+275-            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+[exit 0]
+
+$ sed -n '961,1200p' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/docs/superpowers/plans/2026-09-11-airtable-export.md
+        tasks = make_tasks(project, owner, 3)
+        fake = FakeAirtableTable()
+        fake.fail_for_task_id(str(tasks[2].id), http_error(422))
+        first = export_project_tasks(project, table=fake, sleep=no_sleep)
+        assert [f['taskId'] for f in first.failed] == [str(tasks[2].id)] and len(fake.rows) == 2
+        fake.clear_failures()
+        second = export_project_tasks(project, table=fake, sleep=no_sleep)
+        assert second.failed == [] and (second.created, second.updated) == (1, 2)
+        assert str(tasks[2].id) in fake.task_ids() and len(fake.rows) == 3
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `docker compose exec -T backend python -m pytest projects/test_export.py -k "PartialFailure" -v`
+Expected: FAIL — D1 reports 5 failures and `exported == 0`; D2 shows `calls == [10]`; C5's first run has 3 failures and 0 rows.
+
+- [ ] **Step 3: Implement `_upsert_chunk_with_fallback`** from the "Export algorithm" section and call it from `export_project_tasks` for each chunk.
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `docker compose exec -T backend python -m pytest projects/ -v`
+Expected: all export, mock, and comment tests PASS. `TestRetry` must pass unchanged (E2 stays at one call because a chunk of one skips the fallback; E3 stays at `MAX_ATTEMPTS` because transient exhaustion has no fallback).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/projects/airtable_export.py backend/projects/test_export.py
+git commit -m "feat: isolate bad records with single-record upsert fallback per failed chunk"
+```
+
+---
+
+### Task 6: Wire `ExportView` — response shape, 503/502 mapping, HTTP tests
+
+**Files:**
+- Modify: `backend/projects/views.py`
+- Modify: `backend/projects/test_export.py` (HTTP portion)
+
+**Interfaces:**
+- Consumes: `export_project_tasks`, `AirtableNotConfigured`, `AirtableAuthError`, `_get_membership`, `_can_edit_tasks`.
+- Produces: `ExportView.post` returning `result.as_dict()` (200), 503 `airtable not configured`, or 502 `airtable authentication failed`. The `tasks` list is removed from the response (D1).
+
+- [ ] **Step 1: Write the failing tests** (A1, A2, B4, B8, D3 and D4 over HTTP, response-shape guard)
+
+```python
+from rest_framework.test import APIClient
+from projects.test_comments import authed_client, member_client, make_user   # reuse helpers
+
+
+@pytest.fixture
+def fake_airtable(monkeypatch):
+    fake = FakeAirtableTable()
+    monkeypatch.setattr(airtable_export, 'get_table', lambda: fake)
+    monkeypatch.setattr(airtable_export.time, 'sleep', no_sleep)   # service resolves time.sleep lazily
+    return fake
+
+def export_url(project_id):
+    return f'/api/projects/{project_id}/export'
+
+
+@pytest.mark.django_db
+class TestExportEndpoint:
+    @pytest.mark.parametrize('role,expected', [('admin', 200), ('member', 200), ('viewer', 403), ('non_member', 403)])
+    def test_export_role_gate(self, project, owner, fake_airtable, role, expected):     # A1
+        make_tasks(project, owner, 1)
+        if role == 'non_member':
+            client = authed_client(make_user('stranger@taskboard.dev'))
+        else:
+            _, client = member_client(project, f'{role}@taskboard.dev', role)
+        res = client.post(export_url(project.id))
+        assert res.status_code == expected
+        if expected == 403:
+            assert 'error' in res.data and fake_airtable.calls == []
+        else:
+            assert res.data['exported'] == 1 and len(fake_airtable.calls) == 1
+
+    def test_unauthenticated_gets_401(self, project, fake_airtable):                   # A2
+        res = APIClient().post(export_url(project.id))
+        assert res.status_code == 401 and fake_airtable.calls == []
+
+    def test_response_counts_and_invariants(self, project, owner, fake_airtable):      # B4
+        make_tasks(project, owner, 4)
+        res = authed_client(owner).post(export_url(project.id))
+        assert res.status_code == 200
+        assert res.data == {'exported': 4, 'created': 4, 'updated': 0, 'failed': [], 'total': 4}
+        assert res.data['exported'] == res.data['created'] + res.data['updated']
+        assert res.data['total'] == res.data['exported'] + len(res.data['failed']) == 4
+
+    def test_missing_airtable_config_returns_503(self, project, owner, settings):      # B8
+        settings.AIRTABLE_API_KEY = ''
+        res = authed_client(owner).post(export_url(project.id))
+        assert res.status_code == 503 and res.data == {'error': 'airtable not configured'}
+
+    def test_partial_failure_is_200_with_failed_list(self, project, owner, fake_airtable):
+        tasks = make_tasks(project, owner, 3)
+        fake_airtable.fail_for_task_id(str(tasks[1].id), http_error(422))
+        res = authed_client(owner).post(export_url(project.id))
+        assert res.status_code == 200
+        assert res.data['exported'] == 2 and res.data['failed'][0]['taskId'] == str(tasks[1].id)
+
+    def test_all_records_fail_still_returns_200(self, project, owner, fake_airtable):  # D3
+        tasks = make_tasks(project, owner, 3)
+        for t in tasks:
+            fake_airtable.fail_for_task_id(str(t.id), http_error(422))
+        res = authed_client(owner).post(export_url(project.id))
+        assert res.status_code == 200 and res.data['exported'] == 0
+        assert len(res.data['failed']) == 3 and all(f['reason'] for f in res.data['failed'])
+        assert res.data['total'] == 3
+
+    def test_airtable_auth_error_returns_502(self, project, owner, fake_airtable):     # D4
+        make_tasks(project, owner, 3)
+        fake_airtable.fail_next(1, http_error(401))
+        res = authed_client(owner).post(export_url(project.id))
+        assert res.status_code == 502 and res.data == {'error': 'airtable authentication failed'}
+        assert fake_airtable.rows == {} and 'failed' not in res.data
+
+    def test_response_has_no_tasks_list(self, project, owner, fake_airtable):
+        res = authed_client(owner).post(export_url(project.id))
+        assert set(res.data) == {'exported', 'created', 'updated', 'failed', 'total'}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `docker compose exec -T backend python -m pytest projects/test_export.py -k Endpoint -v`
+Expected: A1 admin/member cases FAIL (stub returns `{'exported': 0, 'tasks': [...]}`, no Airtable call); B4, B8, D3, D4 and the no-tasks-list test FAIL; A1 viewer/non-member and A2 already PASS.
+
+- [ ] **Step 3: Rewrite `ExportView.post`**
+
+```python
+# backend/projects/views.py
+from .airtable_export import export_project_tasks, AirtableNotConfigured, AirtableAuthError
+
+class ExportView(APIView):
+    def post(self, request, project_id):
+        membership = _get_membership(request.user, project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            project = Project.objects.get(id=project_id)
+        except Project.DoesNotExist:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            result = export_project_tasks(project)
+        except AirtableNotConfigured:
+            return Response({'error': 'airtable not configured'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except AirtableAuthError:
+            return Response({'error': 'airtable authentication failed'}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(result.as_dict())
+```
+
+`TaskSerializer` is still imported for other views; nothing else in the file changes. The 502 body deliberately omits Airtable's message so nothing about the credentials leaks.
+
+- [ ] **Step 4: Run the export tests and the full backend suite**
+
+Run:
+```bash
+docker compose exec -T backend python -m pytest projects/test_export.py -v
+docker compose exec -T backend python -m pytest -q
+```
+Expected: all PASS. The suite must not sleep for real (total runtime stays in seconds).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/projects/views.py backend/projects/test_export.py
+git commit -m "feat: POST /api/projects/:id/export upserts tasks to Airtable and reports counts and failures"
+```
+
+---
+
+### Task 7: "Export to Airtable" button on the project page
+
+**Files:**
+- Modify: `frontend/src/types/index.ts`
+- Modify: `frontend/src/pages/ProjectPage.tsx`
+- Create: `frontend/src/tests/ProjectPage.test.tsx`
+
+**Interfaces:**
+- Consumes: `apiFetch`, `getStoredUser` from `@/lib/api-client`; `POST /api/projects/:id/export` (Task 6).
+- Produces: `ApiExportResult` type; `canExport` derived from the same `myRole` as `canComment`; a button with accessible name "Export to Airtable" rendered only when `canExport`; a `data-testid="export-result"` line after a run; a `role="alert"` line on request error.
+
+- [ ] **Step 1: Write the failing tests** (F1–F4)
+
+```tsx
+// frontend/src/tests/ProjectPage.test.tsx
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import ProjectPage from "@/pages/ProjectPage";
+import type { ApiProjectDetail, Role } from "@/types";
+
+const apiFetch = vi.fn();
+vi.mock("@/lib/api-client", () => ({
+  apiFetch: (...args: unknown[]) => apiFetch(...args),
+  getToken: () => "token",
+  getStoredUser: () => ({ id: "u_me", email: "me@taskboard.dev", name: "Me" }),
+  clearSession: () => {},
+}));
+
+function projectWithRole(role: Role): ApiProjectDetail {
+  return {
+    id: "p_1", name: "P", description: null, ownerId: "u_me",
+    owner: { id: "u_me", email: "me@taskboard.dev", name: "Me" },
+    memberships: [{ id: "m_1", role, user: { id: "u_me", email: "me@taskboard.dev", name: "Me" } }],
+    tasks: [], createdAt: "", updatedAt: "",
+  };
+}
+
+function renderPage(role: Role, exportResponse: unknown = { exported: 3, created: 3, updated: 0, failed: [], total: 3 }) {
+  apiFetch.mockImplementation((path: string) =>
+    path.endsWith("/export") ? Promise.resolve(exportResponse) : Promise.resolve({ project: projectWithRole(role) }),
+  );
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter initialEntries={["/projects/p_1"]}>
+        <Routes><Route path="/projects/:id" element={<ProjectPage />} /></Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => apiFetch.mockReset());
+
+describe("ProjectPage export button", () => {
+  it("shows Export button for member", async () => {
+    renderPage("member");
+    expect(await screen.findByRole("button", { name: /export to airtable/i })).toBeInTheDocument();
+  });
+
+  it("hides Export button for viewer", async () => {
+    renderPage("viewer");
+    await screen.findByText("P");
+    expect(screen.queryByRole("button", { name: /export/i })).toBeNull();
+  });
+
+  it("calls the export endpoint and shows the summary", async () => {
+    renderPage("admin");
+[exit 0]
+
+projects/test_comments.py: 15 warnings
+projects/test_export.py: 22 warnings
+projects/tests.py: 9 warnings
+users/tests.py: 2 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:147: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+projects/test_comments.py: 15 warnings
+projects/test_export.py: 22 warnings
+projects/tests.py: 9 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:368: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    decoded = self.decode_complete(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+77 passed, 94 warnings in 32.01s
+[exit 0]
+
+$ docker compose exec -T backend python -m pytest projects/test_airtable_mock.py projects/test_export.py -v --no-header -p no:cacheprovider 2>&1 | tail -70
+============================= test session starts ==============================
+collecting ... collected 42 items
+
+projects/test_export.py::TestAuthorization::test_export_role_gate[admin-200] PASSED [  2%]
+projects/test_export.py::TestAuthorization::test_export_role_gate[member-200] PASSED [  4%]
+projects/test_export.py::TestAuthorization::test_export_role_gate[viewer-403] PASSED [  7%]
+projects/test_export.py::TestAuthorization::test_export_role_gate[non_member-403] PASSED [  9%]
+projects/test_export.py::TestAuthorization::test_unauthenticated_gets_401 PASSED [ 11%]
+projects/test_export.py::TestCoreExport::test_exports_all_tasks_in_project PASSED [ 14%]
+projects/test_export.py::TestCoreExport::test_field_mapping PASSED       [ 16%]
+projects/test_export.py::TestCoreExport::test_unassigned_task_maps_assignee_empty PASSED [ 19%]
+projects/test_export.py::TestCoreExport::test_response_counts_and_invariants PASSED [ 21%]
+projects/test_export.py::TestCoreExport::test_empty_project_exports_zero PASSED [ 23%]
+projects/test_export.py::TestCoreExport::test_only_this_projects_tasks_exported PASSED [ 26%]
+projects/test_export.py::TestCoreExport::test_large_export_batches_not_per_task PASSED [ 28%]
+projects/test_export.py::TestCoreExport::test_missing_airtable_config_returns_503 PASSED [ 30%]
+projects/test_export.py::TestIdempotency::test_second_run_does_not_duplicate PASSED [ 33%]
+projects/test_export.py::TestIdempotency::test_second_run_reports_updated_not_created PASSED [ 35%]
+projects/test_export.py::TestIdempotency::test_changed_task_updates_same_row PASSED [ 38%]
+projects/test_export.py::TestIdempotency::test_mixed_create_and_update PASSED [ 40%]
+projects/test_export.py::TestIdempotency::test_failed_record_recovers_on_next_run PASSED [ 42%]
+projects/test_export.py::TestIdempotency::test_reexport_after_local_delete PASSED [ 45%]
+projects/test_export.py::TestPartialFailure::test_single_permanent_failure_does_not_abort PASSED [ 47%]
+projects/test_export.py::TestPartialFailure::test_failed_chunk_falls_back_to_single_records PASSED [ 50%]
+projects/test_export.py::TestPartialFailure::test_all_records_fail_still_returns_200 PASSED [ 52%]
+projects/test_export.py::TestPartialFailure::test_airtable_auth_error_returns_502 PASSED [ 54%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc0] PASSED [ 57%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc1] PASSED [ 59%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc2] PASSED [ 61%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc3] PASSED [ 64%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc4] PASSED [ 66%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc5] PASSED [ 69%]
+projects/test_export.py::TestRetry::test_transient_is_retried_then_succeeds[exc6] PASSED [ 71%]
+projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[400] PASSED [ 73%]
+projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[404] PASSED [ 76%]
+projects/test_export.py::TestRetry::test_permanent_is_not_retried_and_reported[422] PASSED [ 78%]
+projects/test_export.py::TestRetry::test_retries_are_bounded PASSED      [ 80%]
+projects/test_export.py::TestRetry::test_backoff_delays_grow PASSED      [ 83%]
+projects/test_export.py::TestRetry::test_429_honours_retry_after PASSED  [ 85%]
+projects/test_export.py::TestRetry::test_429_without_retry_after_uses_backoff PASSED [ 88%]
+projects/test_airtable_mock.py::test_upsert_creates_then_updates_same_key PASSED [ 90%]
+projects/test_airtable_mock.py::test_fail_next_raises_then_recovers PASSED [ 92%]
+projects/test_airtable_mock.py::test_fail_for_task_id_targets_the_right_record PASSED [ 95%]
+projects/test_airtable_mock.py::test_http_error_carries_status_and_headers PASSED [ 97%]
+projects/test_airtable_mock.py::test_clear_failures_recovers_targeted_record PASSED [100%]
+
+=============================== warnings summary ===============================
+projects/test_export.py: 22 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:147: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    return self._jws.encode(
+
+projects/test_export.py: 22 warnings
+  /usr/local/lib/python3.12/site-packages/jwt/api_jwt.py:368: InsecureKeyLengthWarning: The HMAC key is 20 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.
+    decoded = self.decode_complete(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 42 passed, 44 warnings in 13.81s =======================
+[exit 0]
+
+$ wc -l /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/airtable_export.py /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/airtable_mock.py
+     214 /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/airtable_export.py
+     120 /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/airtable_mock.py
+     334 total
+[exit 0]
+
+$ grep -n 'def export_project_tasks\|NotImplementedError\|def _upsert\|def _classify\|def as_dict\|class ExportResult\|__getitem__\|return result' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/backend/projects/airtable_export.py
+47:class ExportResult:
+60:    def as_dict(self):
+108:def _classify(exc):
+147:def _upsert(table, payloads, sleep):
+168:def _upsert_chunk_with_fallback(table, chunk, result, sleep):
+192:def export_project_tasks(project, table=None, sleep=None):
+214:    return result.as_dict()
+[exit 0]
+
+$ grep -rn 'Export to Airtable\|export to airtable\|canExport\|/export' /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages/ProjectPage.tsx | head
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages/ProjectPage.tsx:47:      apiFetch<ApiExportResult>(`/api/projects/${id}/export`, { method: "POST" }),
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages/ProjectPage.tsx:61:  const canExport = myRole === "admin" || myRole === "member";
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages/ProjectPage.tsx:108:              {canExport && (
+/Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/pages/ProjectPage.tsx:116:                    {exportToAirtable.isPending ? "Exporting…" : "Export to Airtable"}
+[exit 0]
+
+$ ls /Users/bharath/Desktop/AjackusAssignment/q-taskboard/frontend/src/tests/
+ExportButton.test.tsx
+TaskCard.test.tsx
+schemas.test.ts
+setup.ts
+[exit 0]
+
+# subagent: (main) — 3c real-integration verification setup
+$ docker compose exec -T backend python -c "import os; print('API_KEY set:', bool(os.environ.get('AIRTABLE_API_KEY'))); print('BASE set:', bool(os.environ.get('AIRTABLE_BASE_ID'))); print('TABLE:', os.environ.get('AIRTABLE_TABLE_NAME'))"
+API_KEY set: False
+BASE set: False
+TABLE: None
+[exit 0]
+
+$ grep -n 'AIRTABLE\|env_file' docker-compose.yml || echo 'no AIRTABLE/env_file in compose'
+no AIRTABLE/env_file in compose
+[exit 0]
+
+$ docker compose up -d backend 2>&1 | tail -5
+ Container q-taskboard-db-1 Running 
+ Container q-taskboard-backend-1 Recreate 
+ Container q-taskboard-backend-1 Recreated 
+ Container q-taskboard-backend-1 Starting 
+ Container q-taskboard-backend-1 Started 
+[exit 0]
+
+$ docker compose exec -T backend python -c "import os; print('API_KEY set:', bool(os.environ.get('AIRTABLE_API_KEY')), 'len', len(os.environ.get('AIRTABLE_API_KEY','')));  print('BASE:', os.environ.get('AIRTABLE_BASE_ID')); print('TABLE:', os.environ.get('AIRTABLE_TABLE_NAME'))"
+API_KEY set: True len 82
+BASE: appsV4DNqelOPnUZn
+TABLE: Tasks
+[exit 0]
+
+# subagent: verify-export-live — real Airtable export run
+$ curl -s -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{"email":"meera@taskboard.dev","password":"password123"}' | python3 -c 'import sys,json; d=json.load(sys.stdin); print("token_len", len(d["token"])); open("/private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_meera","w").write(d["token"])'
+token_len 277
+[exit 0]
+
+$ curl -s http://localhost:8000/api/projects -H "Authorization: Bearer $(cat /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_meera)" | python3 -c 'import sys,json; d=json.load(sys.stdin); items=d if isinstance(d,list) else d.get("projects",d.get("items",[])); [print(p["id"], p["name"]) for p in items]'
+d35543dc-9350-4a2f-b1a7-05856338d6c1 Internal Tools Cleanup
+822ec088-4e76-4a35-a79f-4657b43a3eb9 Customer Onboarding Revamp
+8ad55b1a-741b-42e4-bac3-62ad83f35681 Q3 Launch
+[exit 0]
+
+$ curl -s http://localhost:8000/api/projects/8ad55b1a-741b-42e4-bac3-62ad83f35681/tasks -H "Authorization: Bearer $(cat /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_meera)" | python3 -c 'import sys,json; d=json.load(sys.stdin); items=d if isinstance(d,list) else d.get("tasks",d.get("items",[])); print("N =", len(items))'
+N = 7
+[exit 0]
+
+$ echo '--- FIRST EXPORT ---'; curl -s -w '
+HTTP %{http_code}
+' -X POST http://localhost:8000/api/projects/8ad55b1a-741b-42e4-bac3-62ad83f35681/export -H "Authorization: Bearer $(cat /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_meera)"
+--- FIRST EXPORT ---
+{"exported":7,"created":7,"updated":0,"failed":[],"total":7}
+HTTP 200
+[exit 0]
+
+$ echo '--- SECOND EXPORT (idempotency) ---'; curl -s -w '
+HTTP %{http_code}
+' -X POST http://localhost:8000/api/projects/8ad55b1a-741b-42e4-bac3-62ad83f35681/export -H "Authorization: Bearer $(cat /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_meera)"
+--- SECOND EXPORT (idempotency) ---
+{"exported":7,"created":0,"updated":7,"failed":[],"total":7}
+HTTP 200
+[exit 0]
+
+$ curl -s -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/json' -d '{"email":"dev@example.com","password":"password123"}' | python3 -c 'import sys,json; d=json.load(sys.stdin); print("token_len", len(d["token"])); open("/private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_dev","w").write(d["token"])'
+token_len 277
+[exit 0]
+
+$ echo '--- VIEWER EXPORT (expect 403) ---'; curl -s -w '
+HTTP %{http_code}
+' -X POST http://localhost:8000/api/projects/8ad55b1a-741b-42e4-bac3-62ad83f35681/export -H "Authorization: Bearer $(cat /private/tmp/claude-501/-Users-bharath-Desktop-AjackusAssignment/77c71d4a-f6e5-46ec-9b49-03583d4b0643/scratchpad/tok_dev)"
+--- VIEWER EXPORT (expect 403) ---
+{"error":"only admins and members can export"}
+HTTP 403
+[exit 0]
+
+$ echo 'Airtable Tasks table check (via MCP list_records_for_table, base appsV4DNqelOPnUZn): totalRecordCount=7, all 7 records have Project ID 8ad55b1a-741b-42e4-bac3-62ad83f35681, 7 distinct Task IDs, all createdTime 2026-09-11T13:27:01Z (first export). No duplicates after re-run; no new records after viewer 403.'
+Airtable Tasks table check (via MCP list_records_for_table, base appsV4DNqelOPnUZn): totalRecordCount=7, all 7 records have Project ID 8ad55b1a-741b-42e4-bac3-62ad83f35681, 7 distinct Task IDs, all createdTime 2026-09-11T13:27:01Z (first export). No duplicates after re-run; no new records after viewer 403.
+[exit 0]
+
+# subagent: (main) — save verification screenshots to repo root
+$ cp "/Users/bharath/.claude/image-cache/77c71d4a-f6e5-46ec-9b49-03583d4b0643/6.png" 3a-comments-screenshot.png
+[exit 0]
+
+$ cp "/Users/bharath/.claude/image-cache/77c71d4a-f6e5-46ec-9b49-03583d4b0643/7.png" 3c-export-first-run.png
+[exit 0]
+
+$ cp "/Users/bharath/.claude/image-cache/77c71d4a-f6e5-46ec-9b49-03583d4b0643/8.png" 3c-export-second-run.png
+[exit 0]
+
+$ ls -la *.png
+-rw-------@ 1 bharath  staff  348134 Sep 11 19:07 3a-comments-screenshot.png
+-rw-------@ 1 bharath  staff  368391 Sep 11 19:07 3c-export-first-run.png
+-rw-------@ 1 bharath  staff  265320 Sep 11 19:07 3c-export-second-run.png
+[exit 0]
+
+# subagent: (main) — commit & push Part 3c
+$ git add backend/projects/airtable_export.py backend/projects/airtable_mock.py backend/projects/test_export.py backend/projects/test_airtable_mock.py backend/projects/views.py backend/taskboard/settings.py
+[exit 0]
+
+$ git add frontend/src/pages/ProjectPage.tsx frontend/src/types/index.ts frontend/src/tests/ExportButton.test.tsx
+[exit 0]
+
+$ git add docker-compose.yml
+[exit 0]
+
+$ git add docs/3c-airtable-export-test-plan.md docs/superpowers/plans/2026-09-11-airtable-export.md CLAUDE.md
+[exit 0]
+
+$ git add 3a-comments-screenshot.png 3c-export-first-run.png 3c-export-second-run.png TERMINAL_LOG.md
