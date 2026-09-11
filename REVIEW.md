@@ -58,7 +58,7 @@ TOKEN=$(curl -s -X POST http://localhost:8000/api/auth/login -H 'Content-Type: a
 SQLi returned 12 tasks across 2 projects -> VULNERABLE (leaked other projects)
 ```
 
-**Expected output after fix:** the payload is treated as a literal search string, so it matches nothing and stays within the queried project.
+**Output after fix (verified against the running app):** the payload is treated as a literal search string, so it matches nothing and stays within the queried project.
 
 ```
 SQLi returned 0 tasks across 0 projects -> scoped to 1 project
