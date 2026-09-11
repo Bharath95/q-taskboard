@@ -3,8 +3,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import Q
 from users.serializers import UserSerializer
-from .models import Project, Membership, Task
-from .serializers import ProjectDetailSerializer, TaskSerializer
+from .models import Project, Membership, Task, Comment
+from .serializers import ProjectDetailSerializer, TaskSerializer, CommentSerializer
 
 
 def _get_membership(user, project_id):
@@ -237,3 +237,37 @@ class ExportView(APIView):
 
         tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
         return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+
+
+class CommentListCreateView(APIView):
+    def _task_or_none(self, task_id):
+        try:
+            return Task.objects.get(id=task_id)
+        except Task.DoesNotExist:
+            return None
+
+    def get(self, request, task_id):
+        task = self._task_or_none(task_id)
+        if task is None:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        membership = _get_membership(request.user, task.project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        comments = task.comments.select_related('author').order_by('created_at')
+        return Response({'comments': CommentSerializer(comments, many=True).data})
+
+    def post(self, request, task_id):
+        task = self._task_or_none(task_id)
+        if task is None:
+            return Response({'error': 'not found'}, status=status.HTTP_404_NOT_FOUND)
+        membership = _get_membership(request.user, task.project_id)
+        if not membership:
+            return Response({'error': 'forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_edit_tasks(membership.role):
+            return Response({'error': 'viewers cannot post comments'}, status=status.HTTP_403_FORBIDDEN)
+        body = request.data.get('body')
+        if not isinstance(body, str) or not body.strip():
+            return Response({'error': 'comment body is required'}, status=status.HTTP_400_BAD_REQUEST)
+        comment = Comment.objects.create(task=task, author=request.user, body=body.strip())
+        data = CommentSerializer(Comment.objects.select_related('author').get(id=comment.id)).data
+        return Response({'comment': data}, status=status.HTTP_201_CREATED)
