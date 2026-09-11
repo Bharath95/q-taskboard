@@ -5,6 +5,11 @@ from django.db.models import Q
 from users.serializers import UserSerializer
 from .models import Project, Membership, Task, Comment
 from .serializers import ProjectDetailSerializer, TaskSerializer, CommentSerializer
+from .airtable_export import (
+    export_project_tasks,
+    AirtableNotConfigured,
+    AirtableAuthError,
+)
 
 
 def _get_membership(user, project_id):
@@ -235,8 +240,13 @@ class ExportView(APIView):
         if not _can_edit_tasks(membership.role):
             return Response({'error': 'only admins and members can export'}, status=status.HTTP_403_FORBIDDEN)
 
-        tasks = Task.objects.filter(project_id=project_id).select_related('assignee', 'created_by')
-        return Response({'exported': 0, 'tasks': TaskSerializer(tasks, many=True).data})
+        try:
+            result = export_project_tasks(membership.project)
+        except AirtableNotConfigured:
+            return Response({'error': 'airtable not configured'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except AirtableAuthError:
+            return Response({'error': 'airtable authentication failed'}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(result)
 
 
 class CommentListCreateView(APIView):
