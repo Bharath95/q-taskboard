@@ -5,7 +5,7 @@ import { apiFetch, getToken, getStoredUser } from "@/lib/api-client";
 import { Header } from "@/components/Header";
 import { StatusColumn } from "@/components/StatusColumn";
 import { TaskDetail } from "@/components/TaskDetail";
-import type { ApiProjectDetail, ApiTask, TaskStatus } from "@/types";
+import type { ApiExportResult, ApiProjectDetail, ApiTask, TaskStatus } from "@/types";
 import { STATUS_ORDER } from "@/types";
 
 export default function ProjectPage() {
@@ -17,6 +17,8 @@ export default function ProjectPage() {
   const [newTitle, setNewTitle] = useState("");
   const [newColumn, setNewColumn] = useState<TaskStatus>("todo");
   const [error, setError] = useState<string | null>(null);
+  const [exportResult, setExportResult] = useState<ApiExportResult | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!getToken()) navigate("/login", { replace: true });
@@ -40,10 +42,24 @@ export default function ProjectPage() {
     onError: (err) => setError(err instanceof Error ? err.message : "create failed"),
   });
 
+  const exportToAirtable = useMutation({
+    mutationFn: () =>
+      apiFetch<ApiExportResult>(`/api/projects/${id}/export`, { method: "POST" }),
+    onMutate: () => {
+      setExportResult(null);
+      setExportError(null);
+    },
+    onSuccess: (result) => setExportResult(result),
+    onError: (err) =>
+      setExportError(err instanceof Error ? err.message : "export failed"),
+  });
+
   const project = data?.project;
   const me = getStoredUser();
   const myRole = project?.memberships.find((m) => m.user.id === me?.id)?.role;
   const canComment = myRole === "admin" || myRole === "member";
+  const canExport = myRole === "admin" || myRole === "member";
+  const failedCount = exportResult?.failed.length ?? 0;
   const tasksByStatus: Record<TaskStatus, ApiTask[]> = {
     todo: [],
     in_progress: [],
@@ -89,6 +105,34 @@ export default function ProjectPage() {
                   owner: {project.owner.name} · {project.memberships.length} members
                 </p>
               </div>
+              {canExport && (
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => exportToAirtable.mutate()}
+                    disabled={exportToAirtable.isPending}
+                    className="bg-surface hover:bg-border border border-border text-sm font-medium rounded-md px-4 py-2 disabled:opacity-50"
+                  >
+                    {exportToAirtable.isPending ? "Exporting…" : "Export to Airtable"}
+                  </button>
+                  {exportResult && (
+                    <p className="text-xs text-muted" role="status">
+                      Exported {exportResult.exported} tasks ({exportResult.created}{" "}
+                      created, {exportResult.updated} updated)
+                    </p>
+                  )}
+                  {failedCount > 0 && (
+                    <p className="text-xs text-red-400" role="alert">
+                      {failedCount} {failedCount === 1 ? "task" : "tasks"} failed
+                    </p>
+                  )}
+                  {exportError && (
+                    <p className="text-xs text-red-400" role="alert">
+                      {exportError}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <section className="bg-surface border border-border rounded-lg p-4 mb-6">
